@@ -1,0 +1,6 @@
+project: "spatial-transformer"
+entity: "zadorlab"
+group: "${hydra:job.name}"
+name: "${now:%Y-%m-%dT%H-%M-%S}"
+tags: []
+notes: null

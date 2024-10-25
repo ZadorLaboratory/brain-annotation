@@ -1,0 +1,19 @@
+defaults:
+  - _self_
+  - model: default
+  - data: default
+  - training: default
+  - wandb: default
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
+
+seed: 42
+
+debug: false
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.override_dirname}
