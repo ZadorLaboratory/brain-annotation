@@ -288,10 +288,19 @@ class TranscriptomeTokenizer:
         return tokenized_cells, file_cell_metadata
 
     def create_dataset(self, tokenized_cells, cell_metadata):
+        # create attention masks (1s for all tokens, 0s for padding)
+        pad_token = self.gene_token_dict["<pad>"]
+        attention_masks = [
+            [1 if token != pad_token else 0 for token in cell]
+            for cell in tokenized_cells
+        ]
+        
         # create dict for dataset creation
-        dataset_dict = {"input_ids": tokenized_cells}
+        dataset_dict = {
+            "input_ids": tokenized_cells,
+            "attention_mask": attention_masks
+        }
         dataset_dict.update(cell_metadata)
-
 
         # create dataset
         output_dataset = Dataset.from_dict(dataset_dict)

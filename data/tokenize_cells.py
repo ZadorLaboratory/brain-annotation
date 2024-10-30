@@ -1,6 +1,6 @@
 #!/grid/zador/home/benjami/miniconda3/envs/geneformer/bin/python
 
-from geneformer import h5TranscriptomeTokenizer
+from h5ad_tokenizer import TranscriptomeTokenizer
 import time
 import argparse
 import pickle
@@ -9,7 +9,7 @@ from datasets import Dataset, interleave_datasets, DatasetDict
 import numpy as np
 import json
 
-parent_directory = os.environ.get('ROOT_DATA_PATH') # /home/benjami/mnt/zador_nlsas_norepl_data/Ari/transcriptomics
+parent_directory = os.environ.get('ROOT_DATA_PATH') # /home/benjami/mnt/zador_data_norepl/Ari/transcriptomics
 
 parser = argparse.ArgumentParser(description='Tokenize loom files')
 parser.add_argument('--gene_median_file', type=str, default="files/median_dict.pkl",
@@ -23,6 +23,7 @@ parser.add_argument('--output_directory', type=str, default=".",
 parser.add_argument('--gene-panel-path', type=str, default="files/barseq_gene_panel.pkl",
                     help='Path to a gene panel file. If none, all genes are used. The gene panel file should be a pickle of a list. The gene names should be Ensemble gene IDs.')
 parser.add_argument('--nproc', type=int, default=24, help='number of processes')
+parser.add_argument('--output_prefix', type=str, default="train_test_barseq", help='output prefix for the tokenized files')
 
 args = parser.parse_args()
 print("args:", args)
@@ -69,7 +70,7 @@ datasets = []
 for filename in train_filenames:
     h5ad_data_path = os.path.join(parent_directory, args.h5ad_data_directory, filename)
     print("Tokenizing:", h5ad_data_path)
-    tk = h5TranscriptomeTokenizer(label_dict, 
+    tk = TranscriptomeTokenizer(label_dict, 
         gene_median_file=args.gene_median_file,
         token_dictionary_file=args.token_dictionary_file,
         gene_panel = gene_panel,
@@ -86,10 +87,11 @@ for filename in train_filenames:
 dataset = interleave_datasets(datasets)
 
 # get test dataset
+datasets = []
 for filename in test_filenames:
     h5ad_data_path = os.path.join(parent_directory, args.h5ad_data_directory, filename)
     print("Tokenizing:", h5ad_data_path)
-    tk = h5TranscriptomeTokenizer(label_dict, 
+    tk = TranscriptomeTokenizer(label_dict, 
         gene_median_file=args.gene_median_file,
         token_dictionary_file=args.token_dictionary_file,
         gene_panel = gene_panel,
@@ -109,4 +111,4 @@ final_dataset = DatasetDict({
     'test': test_dataset
 })
 
-final_dataset.save_to_disk(os.path.join(args.output_directory, "train_test_barseq.dataset"))
+final_dataset.save_to_disk(os.path.join(args.output_directory, f"{args.output_prefix}.dataset"))
