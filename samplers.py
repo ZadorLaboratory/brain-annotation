@@ -8,33 +8,27 @@ from dataclasses import dataclass
 from transformers import Trainer
 import collections
 from collections import Counter
+from scipy.spatial import cKDTree
 
 @dataclass
 class PrecomputedData:
-    """Container for precomputed spatial data"""
-    coordinates: np.ndarray
-    x_sorted: np.ndarray
-    y_sorted: np.ndarray
-    x_sorted_indices: np.ndarray
-    y_sorted_indices: np.ndarray
+    """Container for precomputed spatial data using KD-tree"""
+    coordinates: np.ndarray  # Only stores 2D coordinates
+    tree: cKDTree
     x_range: float
     y_range: float
-    window_width: float
-    window_height: float
+    initial_radius: float
 
 class SpatialGroupSampler(Sampler):
     """
     Sampler that groups sentences based on spatial proximity in 2D space.
-    
-    Each "example" in the resulting batch is actually a group of sentences that are
-    spatially close to each other. The groups are selected dynamically during iteration.
+    Uses KD-tree for efficient nearest neighbor search.
     
     Args:
         dataset: HuggingFace dataset containing spatial coordinates
         batch_size: Number of examples (groups) per batch
         group_size: Number of sentences per group
         coordinate_key: Key in dataset for accessing spatial coordinates
-        window_size: Size of spatial window for neighbor search (relative to total space)
         seed: Random seed for reproducibility
     """
     def __init__(
@@ -43,100 +37,100 @@ class SpatialGroupSampler(Sampler):
         batch_size: int,
         group_size: int = 32,
         coordinate_key: str = "CCF_streamlines",
-        window_size: float = 0.1,
         seed: int = 0,
     ):
         self.dataset = dataset
         self.batch_size = batch_size
         self.group_size = group_size
         self.coordinate_key = coordinate_key
-        self.window_size = window_size
         self.seed = seed
         self.epoch = 0
         
-        # Calculate sizes
         self.num_samples = len(dataset)
         self.rng = np.random.RandomState(seed)
         
-        # Precompute spatial data
         self.precomputed = self._precompute_spatial_data()
 
+    def _estimate_initial_radius(self, coordinates: np.ndarray, tree: cKDTree) -> float:
+        """
+        Estimate initial radius assuming uniform distribution in 2D.
+        Uses the formula: πr² = (k/n) * total_area
+        where k is group_size and n is total points.
+        """
+        x_range = np.ptp(coordinates[:, 0])
+        y_range = np.ptp(coordinates[:, 1])
+        total_area = x_range * y_range
+        
+        # Solve for radius: r = sqrt((k/n * total_area) / π)
+        target_area = (self.group_size / len(coordinates)) * total_area
+        radius = np.sqrt(target_area / np.pi)
+        
+        # Add 50% margin to handle non-uniformity
+        return radius * 1.5
+
     def _precompute_spatial_data(self) -> PrecomputedData:
-        """Precompute spatial data structures for efficient neighbor search."""
+        """Precompute KD-tree and spatial data for efficient neighbor search."""
         print("Precomputing spatial data...")
+        
+        # Extract only first two dimensions from coordinates
         coordinates = np.array([
-            self.dataset[i][self.coordinate_key] for i in range(len(self.dataset))
+            self.dataset[i][self.coordinate_key][:2] 
+            for i in range(len(self.dataset))
         ])
         
-        x_sorted_indices = np.argsort(coordinates[:, 0])
-        y_sorted_indices = np.argsort(coordinates[:, 1])
+        # Build KD-tree with 2D coordinates
+        tree = cKDTree(coordinates)
         
-        x_sorted = coordinates[x_sorted_indices, 0]
-        y_sorted = coordinates[y_sorted_indices, 1]
+        # Calculate ranges
+        x_range = np.ptp(coordinates[:, 0])
+        y_range = np.ptp(coordinates[:, 1])
         
-        x_min, x_max = x_sorted[0], x_sorted[-1]
-        y_min, y_max = y_sorted[0], y_sorted[-1]
-
-        print("Indexing complete.")
+        # Automatically determine initial radius
+        initial_radius = self._estimate_initial_radius(coordinates, tree)
+        
+        print(f"KD-tree construction complete. Initial radius: {initial_radius:.4f}")
         
         return PrecomputedData(
             coordinates=coordinates,
-            x_sorted=x_sorted,
-            y_sorted=y_sorted,
-            x_sorted_indices=x_sorted_indices,
-            y_sorted_indices=y_sorted_indices,
-            x_range=x_max - x_min,
-            y_range=y_max - y_min,
-            window_width=self.window_size * (x_max - x_min),
-            window_height=self.window_size * (y_max - y_min)
+            tree=tree,
+            x_range=x_range,
+            y_range=y_range,
+            initial_radius=initial_radius
         )
 
     def _get_spatial_group(self, center_idx: int) -> np.ndarray:
-        """Get indices for one spatial group. First finds neighbors in a window, then selects the closest."""
-        
+        """Get indices for one spatial group using KD-tree search."""
         center = self.precomputed.coordinates[center_idx]
+        radius = self.precomputed.initial_radius
         
-        # Find points in window using precomputed arrays
-        x_min = center[0] - self.precomputed.window_width / 2
-        x_max = center[0] + self.precomputed.window_width / 2
-        y_min = center[1] - self.precomputed.window_height / 2
-        y_max = center[1] + self.precomputed.window_height / 2
+        # Ensure we don't request more points than possible
+        effective_group_size = min(self.group_size, len(self.dataset) - 1)
         
-        x_start = np.searchsorted(self.precomputed.x_sorted, x_min)
-        x_end = np.searchsorted(self.precomputed.x_sorted, x_max, side='right')
-        y_start = np.searchsorted(self.precomputed.y_sorted, y_min)
-        y_end = np.searchsorted(self.precomputed.y_sorted, y_max, side='right')
-        
-        x_indices = self.precomputed.x_sorted_indices[x_start:x_end]
-        y_indices = self.precomputed.y_sorted_indices[y_start:y_end]
-        
-        window_indices = np.intersect1d(x_indices, y_indices)
-        
-        if len(window_indices) == 0:
-            return self.rng.choice(len(self.dataset), size=self.group_size, replace=False)
-
-        assert self.group_size <= len(window_indices), "Not enough neighbors found. Increase window size."
+        while True:
+            neighbor_indices = self.precomputed.tree.query_ball_point(
+                center, radius, workers=-1
+            )
             
-        distances = np.sum((self.precomputed.coordinates[window_indices] - center) ** 2, axis=1)
-        k = min(self.group_size, len(window_indices))
-        nearest_idx = np.argpartition(distances, k)[:k]
-        
-        group = window_indices[nearest_idx]
-        
-        if len(group) < self.group_size:
-            remaining = self.group_size - len(group)
-            available = np.setdiff1d(np.arange(len(self.dataset)), group)
-            pad_indices = self.rng.choice(available, size=remaining, replace=False)
-            group = np.concatenate([group, pad_indices])
+            if len(neighbor_indices) >= effective_group_size:
+                neighbor_coords = self.precomputed.coordinates[neighbor_indices]
+                distances = np.sum((neighbor_coords - center) ** 2, axis=1)
+                
+                # Only partition up to the number of points we actually have
+                k = min(effective_group_size, len(distances))
+                closest_local_indices = np.argpartition(distances, k-1)[:k]
+                selected_indices = np.array(neighbor_indices)[closest_local_indices]
+                
+                # If we somehow still don't have enough points, expand radius
+                if len(selected_indices) >= effective_group_size:
+                    return selected_indices[:effective_group_size]
             
-        return group
+            radius *= 2
 
     def __iter__(self) -> Iterator[int]:
         """Returns iterator of indices where spatial groups are kept together."""
         g = torch.Generator()
         g.manual_seed(self.seed + self.epoch)
         
-        # Generate all indices maintaining group structure
         all_indices = []
         num_complete_groups = self.num_samples // self.group_size
         
@@ -158,16 +152,13 @@ class SpatialGroupSampler(Sampler):
         return self.num_samples
 
     def set_epoch(self, epoch: int) -> None:
-        """Sets the epoch for this sampler."""
         self.epoch = epoch
 
 
 class DistributedSpatialGroupSampler(Sampler):
     """
     Distributed version of SpatialGroupSampler for multi-GPU training.
-    
-    Handles proper sharding of data across multiple GPUs while maintaining
-    the spatial grouping of sentences.
+    Uses KD-tree for efficient nearest neighbor search.
     
     Args:
         dataset: HuggingFace dataset containing spatial coordinates
@@ -176,7 +167,6 @@ class DistributedSpatialGroupSampler(Sampler):
         rank: Process rank (defaults to current rank)
         group_size: Number of sentences per group
         coordinate_key: Key in dataset for accessing spatial coordinates
-        window_size: Size of spatial window for neighbor search (relative to total space)
         seed: Random seed for reproducibility
         drop_last: Whether to drop last incomplete batch
     """
@@ -190,7 +180,6 @@ class DistributedSpatialGroupSampler(Sampler):
         drop_last: bool = False,
         group_size: int = 32,
         coordinate_key: str = "CCF_streamlines",
-        window_size: float = 0.1,
     ):
         if num_replicas is None:
             if not dist.is_available():
@@ -209,9 +198,7 @@ class DistributedSpatialGroupSampler(Sampler):
         self.drop_last = drop_last
         self.group_size = group_size
         self.coordinate_key = coordinate_key
-        self.window_size = window_size
 
-        # Calculate sizes for distributed sampling
         if self.drop_last and len(self.dataset) % self.num_replicas != 0:
             self.num_samples = math.ceil(
                 (len(self.dataset) - self.num_replicas) / self.num_replicas
@@ -223,19 +210,18 @@ class DistributedSpatialGroupSampler(Sampler):
         self.seed = seed
         self.rng = np.random.RandomState(seed)
         
-        # Precompute spatial data
         self.precomputed = self._precompute_spatial_data()
         
     # Reuse methods from SpatialGroupSampler
     _precompute_spatial_data = SpatialGroupSampler._precompute_spatial_data
     _get_spatial_group = SpatialGroupSampler._get_spatial_group
+    _estimate_initial_radius = SpatialGroupSampler._estimate_initial_radius
 
     def __iter__(self) -> Iterator[int]:
         """Returns distributed iterator of indices where spatial groups are kept together."""
         g = torch.Generator()
         g.manual_seed(self.seed + self.epoch)
         
-        # Generate all groups first
         all_indices = []
         num_complete_groups = self.total_size // self.group_size
         
@@ -244,7 +230,6 @@ class DistributedSpatialGroupSampler(Sampler):
             group = self._get_spatial_group(center_idx)
             all_indices.extend(group)
             
-        # Handle remaining indices if needed
         remaining = self.total_size - len(all_indices)
         if remaining > 0 and not self.drop_last:
             center_idx = self.rng.randint(0, len(self.dataset))
@@ -254,7 +239,6 @@ class DistributedSpatialGroupSampler(Sampler):
         assert len(all_indices) == self.total_size, \
             f"Expected {self.total_size} indices but got {len(all_indices)}"
             
-        # Subsample indices for this worker
         indices = all_indices[self.rank:self.total_size:self.num_replicas]
         assert len(indices) == self.num_samples
         
@@ -264,14 +248,13 @@ class DistributedSpatialGroupSampler(Sampler):
         return self.num_samples
 
     def set_epoch(self, epoch: int) -> None:
-        """Sets the epoch for this sampler."""
         self.epoch = epoch
 
 @dataclass
 class SpatialGroupCollator:
     """
-    Collator that handles both grouping of spatially-related sentences and their labels.
-    Handles partial batches gracefully.
+    Collator that handles grouping of spatially-related sequences and their labels.
+    Optionally handles attention masks if present in input features.
     """
     group_size: int
     label_key: str
@@ -282,25 +265,30 @@ class SpatialGroupCollator:
     def __post_init__(self):
         if self.feature_keys is None:
             self.feature_keys = ["input_ids"]
-
+    
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         """
         Group features into spatial groups and aggregate their labels.
-        Handles partial batches (when len(features) < group_size).
+        Handles partial batches and includes attention masks only if present.
         """
         if not features:
             return {}
+
+        
+            
+        # Determine which features are present in the input
+        available_features = set(features[0].keys())
+        feature_keys = [key for key in self.feature_keys if key in available_features]
+        if "attention_mask" in available_features and "attention_mask" not in feature_keys:
+            feature_keys.append("attention_mask")
             
         # Handle case where we have fewer features than group_size
         num_features = len(features)
         if num_features < self.group_size:
-            # Pad the features list with copies of the last feature
             padding_needed = self.group_size - num_features
             features.extend([features[-1]] * padding_needed)
-            print("Warning: Padding features to meet group size.")
-            print(f"Original number of features: {num_features}, padded to: {len(features)}")
+            print(f"Warning: Padding batch from {num_features} to {self.group_size} features")
             
-        # Calculate number of complete groups
         num_groups = len(features) // self.group_size
         grouped_features = []
         
@@ -309,47 +297,44 @@ class SpatialGroupCollator:
             end_idx = start_idx + self.group_size
             group = features[start_idx:end_idx]
             
-            # Collect features for this group
-            group_dict = {key: [] for key in self.feature_keys}
+            # Initialize collectors for this group
+            group_dict = {key: [] for key in feature_keys}
+            group_dict["single_cell_labels"] = []
             group_labels = []
             
+            # Get max length for this group
+            max_len = max(len(item["input_ids"]) for item in group)
+            
+            # Process each item in the group
             for item in group:
-                # Collect all features except labels
-                for key in self.feature_keys:
-                    tensor = item[key]
-                    if not isinstance(tensor, torch.Tensor):
-                        tensor = torch.tensor(tensor)
+                # Handle features
+                for key in feature_keys:
+                    tensor = torch.tensor(item[key])
+                    curr_len = tensor.size(0)
+                    
+                    if curr_len < max_len:
+                        # Determine padding value based on feature type
+                        pad_value = 0 if key == "attention_mask" else self.pad_token_id
+                        padding = torch.full((max_len - curr_len,), pad_value, dtype=tensor.dtype)
+                        tensor = torch.cat([tensor, padding])
+                    
                     group_dict[key].append(tensor)
                 
-                # Collect labels separately
-                label = item[self.label_key]
-                if not isinstance(label, torch.Tensor):
-                    label = torch.tensor(label)
+                # Handle label
+                label = torch.tensor(item[self.label_key])
                 group_labels.append(label)
+
+                # Add single-cell labels to group
+                group_dict["single_cell_labels"].append(label)
             
             # Stack features
-            for key in self.feature_keys:
-                # Find max length in this group
-                max_len = max(x.size(-1) for x in group_dict[key])
+            for key in feature_keys:
+                group_dict[key] = torch.stack(group_dict[key])
                 
-                # Pad each tensor to max length
-                padded = []
-                for tensor in group_dict[key]:
-                    if tensor.size(-1) < max_len:
-                        padding = torch.full(
-                            (max_len - tensor.size(-1),),
-                            self.pad_token_id,
-                            dtype=tensor.dtype
-                        )
-                        tensor = torch.cat([tensor, padding])
-                    padded.append(tensor)
-                
-                group_dict[key] = torch.stack(padded)
+            group_dict["single_cell_labels"] = torch.stack(group_dict["single_cell_labels"])
             
-            # Aggregate labels for the group (majority vote)
+            # Compute majority label for the group
             group_labels = torch.stack(group_labels)
-
-            # For classification, use mode
             label_counts = Counter(group_labels.tolist())
             majority_label = label_counts.most_common(1)[0][0]
             group_dict[self.label_key] = torch.tensor(majority_label)
@@ -358,7 +343,7 @@ class SpatialGroupCollator:
         
         if not grouped_features:
             return {}
-            
+        
         # Combine all groups into final batch
         batch = {
             key: torch.stack([group[key] for group in grouped_features])
@@ -369,7 +354,7 @@ class SpatialGroupCollator:
 
 class MultiformerTrainer(Trainer):
     def __init__(self, *args, additional_attributes=None, 
-                 spatial_group_size=32, spatial_window_size=0.1,
+                 spatial_group_size=32, 
                  spatial_label_key='area_labels', **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
@@ -379,7 +364,6 @@ class MultiformerTrainer(Trainer):
         )
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
-        self.spatial_window_size = spatial_window_size
         
         super().__init__(*args, **kwargs)
 
@@ -404,7 +388,6 @@ class MultiformerTrainer(Trainer):
                 dataset=self.train_dataset,
                 batch_size=self.args.train_batch_size,
                 group_size=self.spatial_group_size,
-                window_size=self.spatial_window_size,
                 seed=self.args.seed
             )
         else:
@@ -415,7 +398,6 @@ class MultiformerTrainer(Trainer):
                 rank=self.args.process_index,
                 seed=self.args.seed,
                 group_size=self.spatial_group_size,
-                window_size=self.spatial_window_size
             )
 
     def _get_eval_sampler(self, eval_dataset) -> Optional[torch.utils.data.sampler.Sampler]:
@@ -436,7 +418,6 @@ class MultiformerTrainer(Trainer):
                 dataset=eval_dataset,
                 batch_size=self.args.eval_batch_size,
                 group_size=self.spatial_group_size,
-                window_size=self.spatial_window_size,
                 seed=self.args.seed
             )
         else:
@@ -447,7 +428,6 @@ class MultiformerTrainer(Trainer):
                 rank=self.args.process_index,
                 seed=self.args.seed,
                 group_size=self.spatial_group_size,
-                window_size=self.spatial_window_size
             )
         
 ## Usage Example
@@ -457,7 +437,6 @@ class MultiformerTrainer(Trainer):
 #     dataset=dataset,
 #     batch_size=64,
 #     group_size=32,
-#     window_size=0.1
 # )
 
 # # For distributed training:
@@ -465,7 +444,6 @@ class MultiformerTrainer(Trainer):
 #     dataset=dataset,
 #     batch_size=64,
 #     group_size=32,
-#     window_size=0.1,
 #     num_replicas=dist.get_world_size(),
 #     rank=dist.get_rank()
 # )
