@@ -1,6 +1,6 @@
 dataset_path: /home/benjami/brain-annotation/data/train_test_barseq.dataset  # Path to tokenized DatasetDict
 group_size: 32
-window_size: 0.05
+window_size: 0.1
 validation_split: 0.1
 coordinate_key: "CCF_streamlines"
 label_key: "area_label"

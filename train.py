@@ -8,7 +8,7 @@ from omegaconf import DictConfig, OmegaConf
 
 import torch
 import numpy as np
-from datasets import DatasetDict, load_from_disk
+from datasets import DatasetDict, load_from_disk, disable_caching
 from transformers import (
     AutoTokenizer,
     TrainingArguments,
@@ -19,7 +19,7 @@ from sklearn.model_selection import train_test_split
 
 from model import HierarchicalBert, HierarchicalBertConfig
 from samplers import MultiformerTrainer
-from transformers import BertModel, BertPreTrainedModel
+from transformers import BertModel, BertPreTrainedModel, BertConfig, BertForSequenceClassification, Trainer
 
 
 def setup_wandb(cfg: DictConfig):
@@ -55,7 +55,22 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             num_labels=config.model.num_labels,
             class_weights=class_weights
         )
-        
+    elif config.model.pretrained_type == "single-cell":
+        model = BertForSequenceClassification.from_pretrained(
+            config.model.bert_path_or_name,
+            num_labels=config.model.num_labels,
+        )
+    elif config.model.pretrained_type == "single-cell-from-scratch":
+        config =  BertConfig(
+            num_labels=config.model.num_labels,
+            bert_config=config.model.bert_path_or_name,
+            num_set_layers=config.model.num_set_layers,
+            set_hidden_size=config.model.set_hidden_size,
+            num_attention_heads=config.model.num_attention_heads,
+            dropout_prob=config.model.dropout_prob,
+            **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
+        )
+        model = BertForSequenceClassification(config)
     else:
         # For both "none" and "bert_only" cases, first create config
         model_config = HierarchicalBertConfig(
@@ -77,7 +92,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
         if config.model.pretrained_type == "bert_only":
             pretrained_bert = BertModel.from_pretrained(config.model.bert_path_or_name)
             model.bert.load_state_dict(pretrained_bert.state_dict())
-        
+
     return model
 
 
@@ -147,6 +162,10 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
             f"Unique labels found: {unique_labels}"
         )
 
+    # reindex train_dataset?
+    # train_dataset = train_dataset.flatten_indices()
+    # val_dataset = val_dataset.flatten_indices()
+
     return DatasetDict({
         "train": train_dataset,
         "validation": val_dataset,
@@ -195,6 +214,9 @@ def main(cfg: DictConfig) -> None:
     
     # Initialize wandb
     setup_wandb(cfg)
+
+    # Disable caching for datasets
+    disable_caching()
     
     # Load pre-tokenized datasets
     dataset_dict = load_from_disk(cfg.data.dataset_path)
@@ -207,17 +229,26 @@ def main(cfg: DictConfig) -> None:
     model = create_model(cfg, class_weights)
     
     # Initialize trainer
-    trainer = MultiformerTrainer(
-        model=model,
-        args=TrainingArguments(**cfg.training),
-        train_dataset=datasets["train"],
-        eval_dataset=datasets["validation"],
-        compute_metrics=compute_metrics,
-        spatial_group_size=cfg.data.group_size,
-        spatial_window_size=1 if cfg.debug else cfg.data.window_size,
-        spatial_label_key="labels",
-    )
-    
+    if "single-cell" in cfg.model.pretrained_type:
+        trainer = Trainer(
+            model=model,
+            args=TrainingArguments(**cfg.training),
+            train_dataset=datasets["train"],
+            eval_dataset=datasets["validation"],
+            compute_metrics=compute_metrics,
+        )
+    else:
+        trainer = MultiformerTrainer(
+            model=model,
+            args=TrainingArguments(**cfg.training),
+            train_dataset=datasets["train"],
+            eval_dataset=datasets["validation"],
+            compute_metrics=compute_metrics,
+            spatial_group_size=cfg.data.group_size,
+            spatial_window_size=1 if cfg.debug else cfg.data.window_size,
+            spatial_label_key="labels",
+        )
+        
     # Train
     train_result = trainer.train()
     trainer.save_model()
