@@ -188,13 +188,13 @@ def compute_metrics(eval_pred) -> Dict[str, float]:
     }
     
     # Updated wandb confusion matrix call
-    wandb.log({
-        "confusion_matrix": wandb.plot.confusion_matrix(
-            preds=predictions,
-            y_true=labels,
-            class_names=[f"class_{i}" for i in range(logits.shape[1])]  # number of classes from logits
-        )
-    })
+    # wandb.log({
+    #     "confusion_matrix": wandb.plot.confusion_matrix(
+    #         preds=predictions,
+    #         y_true=labels,
+    #         class_names=[f"class_{i}" for i in range(logits.shape[1])]  # number of classes from logits
+    #     )
+    # })
     
     return metrics
 

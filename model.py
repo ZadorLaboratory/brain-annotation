@@ -183,7 +183,7 @@ class HierarchicalBert(BertPreTrainedModel):
         )
             
         # Get CLS tokens and reshape
-        sentence_embeddings = bert_outputs.last_hidden_state[:, 0]  # Take CLS token
+        sentence_embeddings = bert_outputs[1]  # Pooled output
 
         # Get single-cell classifications
         single_cell_logits = self.single_cell_classifier(sentence_embeddings) # shape (batch_size * num_sentences, num_labels)
