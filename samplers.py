@@ -9,6 +9,7 @@ from transformers import Trainer
 import collections
 from collections import Counter
 from scipy.spatial import cKDTree
+import wandb
 
 @dataclass
 class PrecomputedData:
@@ -369,6 +370,17 @@ class MultiformerTrainer(Trainer):
 
         assert self.args.train_batch_size % spatial_group_size == 0, \
             "train_batch_size must be divisible by spatial_group_size"
+    
+    def evaluate(self, *args, **kwargs):
+        metrics = super().evaluate(*args, **kwargs)
+        
+        # Log your parameter
+        param_value = self.model.pool_weight.item()
+        wandb.log({
+            "pool_weight": param_value,
+        })
+        
+        return metrics
 
     def _get_train_sampler(self) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(self.train_dataset, collections.abc.Sized):

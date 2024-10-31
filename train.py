@@ -35,16 +35,6 @@ def setup_wandb(cfg: DictConfig):
         config=OmegaConf.to_container(cfg, resolve=True),
     )
 
-class CustomCallback(TrainerCallback):
-    def on_evaluate(self, args, state, control, metrics):
-        # Get specific parameter values
-        param_value = trainer.model.pool_weight.item()
-        
-        # Log to wandb
-        wandb.log({
-            "pool_weight": param_value,
-        })
-
 def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = None) -> HierarchicalBert:
     """
     Create model based on pretraining configuration.
@@ -262,7 +252,6 @@ def main(cfg: DictConfig) -> None:
             compute_metrics=compute_metrics,
             spatial_group_size=cfg.data.group_size,
             spatial_label_key="labels",
-            callbacks=[CustomCallback()]
         )
         
     # Train
