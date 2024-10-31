@@ -84,6 +84,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             class_weights=class_weights,
             pool_weight=config.model.pool_weight,
             single_cell_augmentation=config.single_cell_augmentation,
+            detach_bert_embeddings=config.model.detach_bert_embeddings,
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         

@@ -44,6 +44,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.class_weights = class_weights
         self.pool_weight = pool_weight
         self.single_cell_augmentation = single_cell_augmentation
+        self.detach_bert_embeddings = False
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
@@ -131,6 +132,7 @@ class HierarchicalBert(BertPreTrainedModel):
             self.pool_weight.requires_grad = False
 
         self.single_cell_augmentation = config.single_cell_augmentation
+        self.detach_bert_embeddings = config.detach_bert_embeddings
         
         
     def _init_weights(self, module):
@@ -198,7 +200,11 @@ class HierarchicalBert(BertPreTrainedModel):
         # Get single-cell classifications
         single_cell_logits = self.single_cell_classifier(sentence_embeddings) # shape (batch_size * num_sentences, num_labels)
 
-       # Reshape to (batch_size, num_sentences, hidden_size) 
+        # Potentially detach embeddings
+        if self.detach_bert_embeddings:
+            sentence_embeddings = sentence_embeddings.detach()
+
+        # Reshape to (batch_size, num_sentences, hidden_size) 
         sentence_embeddings = sentence_embeddings.view(batch_size, num_sentences, -1)
         assert sentence_embeddings.shape == (batch_size, num_sentences, bert_outputs.last_hidden_state.size(-1)), \
             f"Expected sentence_embeddings shape (batch_size, num_sentences, hidden_size), got {sentence_embeddings.shape}"
