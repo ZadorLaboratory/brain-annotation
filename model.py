@@ -27,6 +27,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         class_weights: Optional[torch.Tensor] = None,
         pool_weight: Union[str, float] = 0.5,
         single_cell_augmentation: bool = False,
+        detach_bert_embeddings: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -44,7 +45,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.class_weights = class_weights
         self.pool_weight = pool_weight
         self.single_cell_augmentation = single_cell_augmentation
-        self.detach_bert_embeddings = False
+        self.detach_bert_embeddings = detach_bert_embeddings
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
