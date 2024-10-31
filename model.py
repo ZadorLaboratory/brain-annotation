@@ -24,6 +24,9 @@ class HierarchicalBertConfig(PretrainedConfig):
         set_hidden_size: int = 768,
         num_attention_heads: int = 8,
         dropout_prob: float = 0.1,
+        class_weights: Optional[torch.Tensor] = None,
+        pool_weight: Union[str, float] = 0.5,
+        single_cell_augmentation: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -38,7 +41,9 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.set_hidden_size = set_hidden_size
         self.num_attention_heads = num_attention_heads
         self.dropout_prob = dropout_prob
-
+        self.class_weights = class_weights
+        self.pool_weight = pool_weight
+        self.single_cell_augmentation = single_cell_augmentation
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
@@ -111,7 +116,10 @@ class HierarchicalBert(BertPreTrainedModel):
         self.dropout = nn.Dropout(config.dropout_prob)
 
         # Single-cell classification head
-        self.single_cell_classifier = nn.Linear(config.bert_config.hidden_size, config.num_labels)
+        if config.single_cell_augmentation:
+            self.single_cell_classifier = nn.Linear(config.bert_config.hidden_size, config.num_labels)
+        else:
+            self.single_cell_classifier = nn.Identity()
         
         # Store class weights
         self.class_weights = config.class_weights
@@ -121,6 +129,8 @@ class HierarchicalBert(BertPreTrainedModel):
         else:
             self.pool_weight = torch.tensor(config.pool_weight)
             self.pool_weight.requires_grad = False
+
+        self.single_cell_augmentation = config.single_cell_augmentation
         
         
     def _init_weights(self, module):
@@ -222,7 +232,7 @@ class HierarchicalBert(BertPreTrainedModel):
         logits = self.classifier(pooled) # shape (batch_size, num_labels)
 
         # add in pooled single-cell logits
-        if single_cell_logits is not None:
+        if self.single_cell_augmentation:
             single_cell_logits_reshaped = self.dropout(single_cell_logits)
             single_cell_logits_reshaped = single_cell_logits_reshaped.view(batch_size, num_sentences, -1)
             pooled_single_cell_logits = torch.mean(single_cell_logits_reshaped, dim=1)
@@ -243,7 +253,7 @@ class HierarchicalBert(BertPreTrainedModel):
             )
             loss = loss_fct(logits.view(-1, self.config.num_labels), labels.view(-1))
 
-            if single_cell_labels is not None:
+            if self.single_cell_augmentation:
                 single_cell_loss = loss_fct(single_cell_logits.view(-1, self.config.num_labels), single_cell_labels.view(-1))
                 loss += single_cell_loss
 

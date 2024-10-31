@@ -372,13 +372,14 @@ class MultiformerTrainer(Trainer):
             label_key=spatial_label_key,
             feature_keys=["input_ids"],  # Add other feature keys as needed
             pad_token_id=0, # Adjust as needed
-            add_single_cell_labels=add_single_cell_labels
+            add_single_cell_labels=True
         )
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
         
         super().__init__(*args, **kwargs)
 
+        self.precomputed_eval_sampler_data = None
         eval_sampler = self._get_eval_sampler(self.eval_dataset)
         self.precomputed_eval_sampler_data = eval_sampler.precomputed if eval_sampler is not None else None
 

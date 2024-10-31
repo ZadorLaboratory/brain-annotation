@@ -83,6 +83,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             dropout_prob=config.model.dropout_prob,
             class_weights=class_weights,
             pool_weight=config.model.pool_weight,
+            single_cell_augmentation=config.single_cell_augmentation,
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         
@@ -250,7 +251,6 @@ def main(cfg: DictConfig) -> None:
             compute_metrics=compute_metrics,
             spatial_group_size=cfg.data.group_size,
             spatial_label_key="labels",
-            add_single_cell_labels=cfg.single_cell_augmentation,
         )
         
     # Train
