@@ -109,9 +109,18 @@ class HierarchicalBert(BertPreTrainedModel):
         # Classification head
         self.classifier = nn.Linear(config.set_hidden_size, config.num_labels)
         self.dropout = nn.Dropout(config.dropout_prob)
+
+        # Single-cell classification head
+        self.single_cell_classifier = nn.Linear(config.bert_config.hidden_size, config.num_labels)
         
         # Store class weights
         self.class_weights = config.class_weights
+
+        if config.pool_weight == "learned":
+            self.pool_weight = nn.Parameter(torch.ones(1)*0.5, requires_grad=True)
+        else:
+            self.pool_weight = torch.tensor(config.pool_weight)
+            self.pool_weight.requires_grad = False
         
         
     def _init_weights(self, module):
@@ -137,6 +146,7 @@ class HierarchicalBert(BertPreTrainedModel):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
+            single_cell_labels: Optional[torch.Tensor] = None,
             ) -> Union[Tuple, SequenceClassifierOutput]:
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -174,6 +184,11 @@ class HierarchicalBert(BertPreTrainedModel):
             
         # Get CLS tokens and reshape
         sentence_embeddings = bert_outputs.last_hidden_state[:, 0]  # Take CLS token
+
+        # Get single-cell classifications
+        single_cell_logits = self.single_cell_classifier(sentence_embeddings) # shape (batch_size * num_sentences, num_labels)
+
+       # Reshape to (batch_size, num_sentences, hidden_size) 
         sentence_embeddings = sentence_embeddings.view(batch_size, num_sentences, -1)
         assert sentence_embeddings.shape == (batch_size, num_sentences, bert_outputs.last_hidden_state.size(-1)), \
             f"Expected sentence_embeddings shape (batch_size, num_sentences, hidden_size), got {sentence_embeddings.shape}"
@@ -204,7 +219,17 @@ class HierarchicalBert(BertPreTrainedModel):
         pooled = self.dropout(pooled)
         
         # Classification
-        logits = self.classifier(pooled)
+        logits = self.classifier(pooled) # shape (batch_size, num_labels)
+
+        # add in pooled single-cell logits
+        if single_cell_logits is not None:
+            single_cell_logits_reshaped = self.dropout(single_cell_logits)
+            single_cell_logits_reshaped = single_cell_logits_reshaped.view(batch_size, num_sentences, -1)
+            pooled_single_cell_logits = torch.mean(single_cell_logits_reshaped, dim=1)
+
+            self.pool_weight.data = torch.clamp(self.pool_weight.data, 0.0, 1.0)
+
+            logits = pooled_single_cell_logits.detach() * self.pool_weight + logits * (1 - self.pool_weight)        
         
         loss = None
         if labels is not None:
@@ -217,6 +242,13 @@ class HierarchicalBert(BertPreTrainedModel):
                 weight=self.class_weights.to(logits.device) if self.class_weights is not None else None
             )
             loss = loss_fct(logits.view(-1, self.config.num_labels), labels.view(-1))
+
+            if single_cell_labels is not None:
+                single_cell_loss = loss_fct(single_cell_logits.view(-1, self.config.num_labels), single_cell_labels.view(-1))
+                loss += single_cell_loss
+
+                # Regularize pool_weight to be between 0 and 1, with preference towards 0.5
+                loss += 0.1 * (self.pool_weight - 0.5).pow(2).mean()
         
         if not return_dict:
             output = (logits,) + (hidden_states,)

@@ -12,6 +12,7 @@ num_set_layers: 4
 set_hidden_size: 768
 num_attention_heads: 8
 dropout_prob: 0.1 # dropout on cells in group pooling
+pool_weight: 0.5 # 'learned' or float 0-1. 1 is a model average of single-cell logits, 0 is all set transformer.
 
 # Optional BERT config parameters (used when pretrained_type is "none")
 bert_params:

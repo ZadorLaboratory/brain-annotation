@@ -16,6 +16,6 @@ save_strategy: "steps"
 load_best_model_at_end: true
 metric_for_best_model: "eval_accuracy"
 report_to: "wandb"
-remove_unused_columns: true
+remove_unused_columns: false
 dataloader_prefetch_factor: 4
 dataloader_num_workers: 48

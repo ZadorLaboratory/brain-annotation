@@ -20,6 +20,7 @@ from sklearn.model_selection import train_test_split
 from model import HierarchicalBert, HierarchicalBertConfig
 from samplers import MultiformerTrainer
 from transformers import BertModel, BertPreTrainedModel, BertConfig, BertForSequenceClassification, Trainer
+from transformers.trainer_callback import TrainerCallback
 
 
 def setup_wandb(cfg: DictConfig):
@@ -33,6 +34,16 @@ def setup_wandb(cfg: DictConfig):
         notes=cfg.wandb.notes,
         config=OmegaConf.to_container(cfg, resolve=True),
     )
+
+class CustomCallback(TrainerCallback):
+    def on_evaluate(self, args, state, control, metrics):
+        # Get specific parameter values
+        param_value = trainer.model.pool_weight.item()
+        
+        # Log to wandb
+        wandb.log({
+            "pool_weight": param_value,
+        })
 
 def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = None) -> HierarchicalBert:
     """
@@ -53,7 +64,8 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
         model = HierarchicalBert.from_pretrained(
             config.model.model_path,
             num_labels=config.model.num_labels,
-            class_weights=class_weights
+            class_weights=class_weights,
+            pool_weight=config.model.pool_weight,
         )
     elif config.model.pretrained_type == "single-cell":
         model = BertForSequenceClassification.from_pretrained(
@@ -82,6 +94,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             num_attention_heads=config.model.num_attention_heads,
             dropout_prob=config.model.dropout_prob,
             class_weights=class_weights,
+            pool_weight=config.model.pool_weight,
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         
@@ -176,7 +189,10 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
 def compute_metrics(eval_pred) -> Dict[str, float]:
     logits, labels = eval_pred
     predictions = np.argmax(logits, axis=-1)
-    
+
+    if isinstance(labels, tuple):
+        labels = labels[0]
+
     metrics = {
         "accuracy": (predictions == labels).mean(),
     }
@@ -245,8 +261,8 @@ def main(cfg: DictConfig) -> None:
             eval_dataset=datasets["validation"],
             compute_metrics=compute_metrics,
             spatial_group_size=cfg.data.group_size,
-            spatial_window_size=1 if cfg.debug else cfg.data.window_size,
             spatial_label_key="labels",
+            callbacks=[CustomCallback()]
         )
         
     # Train
