@@ -11,6 +11,8 @@ seed: 42
 
 debug: false
 
+single_cell_augmentation: true
+
 hydra:
   run:
     dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

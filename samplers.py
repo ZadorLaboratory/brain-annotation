@@ -39,6 +39,7 @@ class SpatialGroupSampler(Sampler):
         group_size: int = 32,
         coordinate_key: str = "CCF_streamlines",
         seed: int = 0,
+        precomputed: Optional[PrecomputedData] = None
     ):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -50,7 +51,10 @@ class SpatialGroupSampler(Sampler):
         self.num_samples = len(dataset)
         self.rng = np.random.RandomState(seed)
         
-        self.precomputed = self._precompute_spatial_data()
+        if precomputed is not None:
+            self.precomputed = precomputed
+        else:
+            self.precomputed = self._precompute_spatial_data()
 
     def _estimate_initial_radius(self, coordinates: np.ndarray, tree: cKDTree) -> float:
         """
@@ -181,6 +185,7 @@ class DistributedSpatialGroupSampler(Sampler):
         drop_last: bool = False,
         group_size: int = 32,
         coordinate_key: str = "CCF_streamlines",
+        precomputed: Optional[PrecomputedData] = None
     ):
         if num_replicas is None:
             if not dist.is_available():
@@ -211,7 +216,10 @@ class DistributedSpatialGroupSampler(Sampler):
         self.seed = seed
         self.rng = np.random.RandomState(seed)
         
-        self.precomputed = self._precompute_spatial_data()
+        if precomputed is not None:
+            self.precomputed = precomputed
+        else:
+            self.precomputed = self._precompute_spatial_data()
         
     # Reuse methods from SpatialGroupSampler
     _precompute_spatial_data = SpatialGroupSampler._precompute_spatial_data
@@ -262,6 +270,7 @@ class SpatialGroupCollator:
     feature_keys: Optional[List[str]] = None
     pad_token_id: int = 0
     padding: str = "max_length"
+    add_single_cell_labels: bool = True
     
     def __post_init__(self):
         if self.feature_keys is None:
@@ -274,8 +283,6 @@ class SpatialGroupCollator:
         """
         if not features:
             return {}
-
-        
             
         # Determine which features are present in the input
         available_features = set(features[0].keys())
@@ -300,7 +307,8 @@ class SpatialGroupCollator:
             
             # Initialize collectors for this group
             group_dict = {key: [] for key in feature_keys}
-            group_dict["single_cell_labels"] = []
+            if self.add_single_cell_labels:
+                group_dict["single_cell_labels"] = []
             group_labels = []
             
             # Get max length for this group
@@ -326,13 +334,15 @@ class SpatialGroupCollator:
                 group_labels.append(label)
 
                 # Add single-cell labels to group
-                group_dict["single_cell_labels"].append(label)
+                if self.add_single_cell_labels:
+                    group_dict["single_cell_labels"].append(label)
             
             # Stack features
             for key in feature_keys:
                 group_dict[key] = torch.stack(group_dict[key])
                 
-            group_dict["single_cell_labels"] = torch.stack(group_dict["single_cell_labels"])
+            if self.add_single_cell_labels:    
+                group_dict["single_cell_labels"] = torch.stack(group_dict["single_cell_labels"])
             
             # Compute majority label for the group
             group_labels = torch.stack(group_labels)
@@ -354,19 +364,23 @@ class SpatialGroupCollator:
         return batch
 
 class MultiformerTrainer(Trainer):
-    def __init__(self, *args, additional_attributes=None, 
+    def __init__(self, *args, add_single_cell_labels=True, 
                  spatial_group_size=32, 
                  spatial_label_key='area_labels', **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
             label_key=spatial_label_key,
             feature_keys=["input_ids"],  # Add other feature keys as needed
-            pad_token_id=0 # Adjust as needed
+            pad_token_id=0, # Adjust as needed
+            add_single_cell_labels=add_single_cell_labels
         )
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
         
         super().__init__(*args, **kwargs)
+
+        eval_sampler = self._get_eval_sampler(self.eval_dataset)
+        self.precomputed_eval_sampler_data = eval_sampler.precomputed if eval_sampler is not None else None
 
         assert self.args.train_batch_size % spatial_group_size == 0, \
             "train_batch_size must be divisible by spatial_group_size"
@@ -430,7 +444,8 @@ class MultiformerTrainer(Trainer):
                 dataset=eval_dataset,
                 batch_size=self.args.eval_batch_size,
                 group_size=self.spatial_group_size,
-                seed=self.args.seed
+                seed=self.args.seed,
+                precomputed=self.precomputed_eval_sampler_data
             )
         else:
             return DistributedSpatialGroupSampler(
@@ -440,6 +455,7 @@ class MultiformerTrainer(Trainer):
                 rank=self.args.process_index,
                 seed=self.args.seed,
                 group_size=self.spatial_group_size,
+                precomputed=self.precomputed_eval_sampler_data
             )
         
 ## Usage Example

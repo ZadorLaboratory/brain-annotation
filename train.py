@@ -10,10 +10,8 @@ import torch
 import numpy as np
 from datasets import DatasetDict, load_from_disk, disable_caching
 from transformers import (
-    AutoTokenizer,
     TrainingArguments,
     set_seed,
-    EarlyStoppingCallback
 )
 from sklearn.model_selection import train_test_split
 
@@ -252,6 +250,7 @@ def main(cfg: DictConfig) -> None:
             compute_metrics=compute_metrics,
             spatial_group_size=cfg.data.group_size,
             spatial_label_key="labels",
+            add_single_cell_labels=cfg.single_cell_augmentation,
         )
         
     # Train
