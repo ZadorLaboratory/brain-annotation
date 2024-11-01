@@ -8,10 +8,8 @@ defaults:
   - override hydra/job_logging: default
 
 seed: 42
-
 debug: false
-
-single_cell_augmentation: true
+single_cell_augmentation: false
 
 hydra:
   run:

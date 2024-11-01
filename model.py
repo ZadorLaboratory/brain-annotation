@@ -128,6 +128,7 @@ class HierarchicalBert(BertPreTrainedModel):
 
         if config.pool_weight == "learned":
             self.pool_weight = nn.Parameter(torch.ones(1)*0.5, requires_grad=True)
+            raise NotImplementedError("Learned pooling weights are not yet implemented")
         else:
             self.pool_weight = torch.tensor(config.pool_weight)
             self.pool_weight.requires_grad = False
@@ -220,34 +221,36 @@ class HierarchicalBert(BertPreTrainedModel):
         all_hidden_states = (hidden_states,) if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
         
-        for layer in self.set_layers:
-            hidden_states, attn_weights = layer(
-                hidden_states,
-                output_attentions=output_attentions
-            )
+        if self.pool_weight < 1:
+            for layer in self.set_layers:
+                hidden_states, attn_weights = layer(
+                    hidden_states,
+                    output_attentions=output_attentions
+                )
+                
+                if output_hidden_states:
+                    all_hidden_states = all_hidden_states + (hidden_states,)
+                if output_attentions and attn_weights is not None:
+                    all_self_attentions = all_self_attentions + (attn_weights,)
             
-            if output_hidden_states:
-                all_hidden_states = all_hidden_states + (hidden_states,)
-            if output_attentions and attn_weights is not None:
-                all_self_attentions = all_self_attentions + (attn_weights,)
-        
-        # Pool sentences (mean pooling)
-        pooled = torch.mean(hidden_states, dim=1)
-        pooled = self.dropout(pooled)
-        
-        # Classification
-        logits = self.classifier(pooled) # shape (batch_size, num_labels)
+            # Pool sentences (mean pooling)
+            pooled = torch.mean(hidden_states, dim=1)
+            pooled = self.dropout(pooled)
+            
+            # Classification
+            logits = self.classifier(pooled) # shape (batch_size, num_labels)
+        else:
+            logits = 0
+            all_hidden_states = None
+            all_self_attentions = None
 
-        # add in pooled single-cell logits
+        # For the final prediction, average in pooled single-cell logits
         if self.single_cell_augmentation:
             single_cell_logits_reshaped = self.dropout(single_cell_logits)
             single_cell_logits_reshaped = single_cell_logits_reshaped.view(batch_size, num_sentences, -1)
             pooled_single_cell_logits = torch.mean(single_cell_logits_reshaped, dim=1)
+            logits = pooled_single_cell_logits * self.pool_weight + logits * (1 - self.pool_weight)       
 
-            self.pool_weight.data = torch.clamp(self.pool_weight.data, 0.0, 1.0)
-
-            logits = pooled_single_cell_logits.detach() * self.pool_weight + logits * (1 - self.pool_weight)        
-        
         loss = None
         if labels is not None:
             if labels.min() < 0 or labels.max() >= self.config.num_labels:
@@ -264,8 +267,6 @@ class HierarchicalBert(BertPreTrainedModel):
                 single_cell_loss = loss_fct(single_cell_logits.view(-1, self.config.num_labels), single_cell_labels.view(-1))
                 loss += single_cell_loss
 
-                # Regularize pool_weight to be between 0 and 1, with preference towards 0.5
-                loss += 0.1 * (self.pool_weight - 0.5).pow(2).mean()
         
         if not return_dict:
             output = (logits,) + (hidden_states,)

@@ -1,10 +1,11 @@
 output_dir: ${hydra:runtime.output_dir}/model
 run_name: ${hydra:runtime.output_dir}/model
 num_train_epochs: 4
-per_device_train_batch_size: 1536 # note this will be divided by ${data.group_size}
-per_device_eval_batch_size: 1536
+per_device_train_batch_size: 4096 # note this will be divided by ${data.group_size}
+per_device_eval_batch_size: 4096
 warmup_ratio: 0.1
-learning_rate: 1e-3
+learning_rate: 1e-4
+lr_scheduler_type: "linear"
 weight_decay: 0.001
 logging_steps: 10
 eval_steps: 50
@@ -18,4 +19,4 @@ metric_for_best_model: "eval_accuracy"
 report_to: "wandb"
 remove_unused_columns: false
 dataloader_prefetch_factor: 4
-dataloader_num_workers: 48
+dataloader_num_workers: 24
