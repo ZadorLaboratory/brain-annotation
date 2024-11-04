@@ -11,8 +11,12 @@ from collections import Counter
 from scipy.spatial import cKDTree
 import wandb
 from transformers.trainer_utils import speed_metrics, PredictionOutput, EvaluationStrategy
+from transformers.trainer import is_datasets_available
 import time
 from torch.utils.data import DataLoader
+
+if is_datasets_available():
+    import datasets
 
 
 @dataclass
@@ -445,7 +449,7 @@ class MultiformerTrainer(Trainer):
                 group_size=self.spatial_group_size,
             )
 
-    def _get_eval_sampler(self, eval_dataset) -> Optional[torch.utils.data.sampler.Sampler]:
+    def _get_eval_sampler(self, eval_dataset, precomputed=True) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(eval_dataset, collections.abc.Sized):
             return None
 
@@ -464,7 +468,7 @@ class MultiformerTrainer(Trainer):
                 batch_size=self.args.eval_batch_size,
                 group_size=self.spatial_group_size,
                 seed=self.args.seed,
-                precomputed=self.precomputed_eval_sampler_data
+                precomputed=self.precomputed_eval_sampler_data if precomputed else None
             )
         else:
             return DistributedSpatialGroupSampler(
@@ -474,8 +478,42 @@ class MultiformerTrainer(Trainer):
                 rank=self.args.process_index,
                 seed=self.args.seed,
                 group_size=self.spatial_group_size,
-                precomputed=self.precomputed_eval_sampler_data
+                precomputed=self.precomputed_eval_sampler_data if precomputed else None
             )
+
+    def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
+        """
+        Returns the test [`~torch.utils.data.DataLoader`].
+
+        Subclass and override this method if you want to inject some custom behavior.
+
+        Args:
+            test_dataset (`torch.utils.data.Dataset`, *optional*):
+                The test dataset to use. If it is a [`~datasets.Dataset`], columns not accepted by the
+                `model.forward()` method are automatically removed. It must implement `__len__`.
+        """
+        data_collator = self.data_collator
+
+        if is_datasets_available() and isinstance(test_dataset, datasets.Dataset):
+            test_dataset = self._remove_unused_columns(test_dataset, description="test")
+        else:
+            data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
+
+        dataloader_params = {
+            "batch_size": self.args.eval_batch_size,
+            "collate_fn": data_collator,
+            "num_workers": self.args.dataloader_num_workers,
+            "pin_memory": self.args.dataloader_pin_memory,
+            "persistent_workers": self.args.dataloader_persistent_workers,
+        }
+
+        if not isinstance(test_dataset, torch.utils.data.IterableDataset):
+            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False)
+            dataloader_params["drop_last"] = self.args.dataloader_drop_last
+            dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+        # We use the same batch_size as for eval.
+        return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
 
     def predict(
         self, test_dataset: Dataset, ignore_keys: Optional[List[str]] = None, metric_key_prefix: str = "test"
