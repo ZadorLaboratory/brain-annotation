@@ -167,6 +167,7 @@ class HierarchicalBert(BertPreTrainedModel):
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
             single_cell_labels: Optional[torch.Tensor] = None,
+            indices: Optional[torch.Tensor] = None,
             ) -> Union[Tuple, SequenceClassifierOutput]:
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict

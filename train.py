@@ -134,6 +134,10 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
         random_state=config.seed
     )
 
+    # Add unique ids to datasets
+    dataset_dict["test"] = dataset_dict["test"].add_column("uuid", np.arange(len(dataset_dict["test"])))
+    train_dataset = train_dataset.add_column("uuid", np.arange(len(dataset_dict["train"])))
+
     # Select train and validation datasets
     val_dataset = train_dataset.select(val_idx)
     train_dataset = train_dataset.select(train_idx)
@@ -166,10 +170,6 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
             f"Unique labels found: {unique_labels}"
         )
 
-    # reindex train_dataset?
-    # train_dataset = train_dataset.flatten_indices()
-    # val_dataset = val_dataset.flatten_indices()
-
     return DatasetDict({
         "train": train_dataset,
         "validation": val_dataset,
@@ -178,7 +178,8 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
 
 
 def compute_metrics(eval_pred) -> Dict[str, float]:
-    logits, labels = eval_pred
+    logits = eval_pred.predictions
+    labels = eval_pred.label_ids
     predictions = np.argmax(logits, axis=-1)
 
     if isinstance(labels, tuple):
@@ -199,6 +200,12 @@ def compute_metrics(eval_pred) -> Dict[str, float]:
     
     return metrics
 
+def average_batch_location(dataset, indices, key="CCF_streamlines"):
+    batch_locations = []
+    for batch in indices:
+        locations = dataset[batch][key]
+        batch_locations.append(np.mean(locations, axis=0))
+    return np.stack(batch_locations)
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:
@@ -271,12 +278,24 @@ def main(cfg: DictConfig) -> None:
     trainer.save_metrics("eval", metrics)
     
     # Test
-    test_metrics = trainer.predict(
+    outputs, indices = trainer.predict(
         datasets["test"],
         metric_key_prefix="test"
     )
-    trainer.log_metrics("test", test_metrics)
-    trainer.save_metrics("test", test_metrics)
+
+    locations = average_batch_location(datasets["test"], indices)
+    labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+    output_dict = {
+        "locations": locations,
+        "labels": labels,
+        "predictions": np.argmax(outputs.predictions, axis=-1),
+    }
+
+    # save to disk. 
+    np.save(os.path.join(cfg.output_dir, "test_brain_predictions.npy"), output_dict)
+
+    # Log metrics
+    trainer.log_metrics("test", outputs.metrics)
     
     # Close wandb run
     wandb.finish()

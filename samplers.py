@@ -10,6 +10,10 @@ import collections
 from collections import Counter
 from scipy.spatial import cKDTree
 import wandb
+from transformers.trainer_utils import speed_metrics, PredictionOutput, EvaluationStrategy
+import time
+from torch.utils.data import DataLoader
+
 
 @dataclass
 class PrecomputedData:
@@ -263,7 +267,7 @@ class DistributedSpatialGroupSampler(Sampler):
 class SpatialGroupCollator:
     """
     Collator that handles grouping of spatially-related sequences and their labels.
-    Optionally handles attention masks if present in input features.
+    Optionally handles attention masks and indices if present in input features.
     """
     group_size: int
     label_key: str
@@ -271,6 +275,7 @@ class SpatialGroupCollator:
     pad_token_id: int = 0
     padding: str = "max_length"
     add_single_cell_labels: bool = True
+    index_key: Optional[str] = None  # New parameter for index tracking
     
     def __post_init__(self):
         if self.feature_keys is None:
@@ -279,7 +284,7 @@ class SpatialGroupCollator:
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         """
         Group features into spatial groups and aggregate their labels.
-        Handles partial batches and includes attention masks only if present.
+        Handles partial batches and includes attention masks and indices if present.
         """
         if not features:
             return {}
@@ -309,6 +314,8 @@ class SpatialGroupCollator:
             group_dict = {key: [] for key in feature_keys}
             if self.add_single_cell_labels:
                 group_dict["single_cell_labels"] = []
+            if self.index_key and self.index_key in available_features:
+                group_dict["indices"] = []  # Add collector for indices
             group_labels = []
             
             # Get max length for this group
@@ -336,6 +343,10 @@ class SpatialGroupCollator:
                 # Add single-cell labels to group
                 if self.add_single_cell_labels:
                     group_dict["single_cell_labels"].append(label)
+                    
+                # Handle indices if present
+                if self.index_key and self.index_key in item:
+                    group_dict["indices"].append(torch.tensor(item[self.index_key]))
             
             # Stack features
             for key in feature_keys:
@@ -343,6 +354,10 @@ class SpatialGroupCollator:
                 
             if self.add_single_cell_labels:    
                 group_dict["single_cell_labels"] = torch.stack(group_dict["single_cell_labels"])
+                
+            # Stack indices if present
+            if self.index_key and "indices" in group_dict:
+                group_dict["indices"] = torch.stack(group_dict["indices"])
             
             # Compute majority label for the group
             group_labels = torch.stack(group_labels)
@@ -366,13 +381,16 @@ class SpatialGroupCollator:
 class MultiformerTrainer(Trainer):
     def __init__(self, *args, add_single_cell_labels=True, 
                  spatial_group_size=32, 
-                 spatial_label_key='area_labels', **kwargs):
+                 spatial_label_key='area_labels', 
+                 index_key='uuid',
+                 **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
             label_key=spatial_label_key,
-            feature_keys=["input_ids"],  # Add other feature keys as needed
+            feature_keys=["input_ids",],  # Add other feature keys as needed
             pad_token_id=0, # Adjust as needed
-            add_single_cell_labels=True
+            add_single_cell_labels=add_single_cell_labels,
+            index_key=index_key  # Add index tracking
         )
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
@@ -458,29 +476,103 @@ class MultiformerTrainer(Trainer):
                 group_size=self.spatial_group_size,
                 precomputed=self.precomputed_eval_sampler_data
             )
+
+    def predict(
+        self, test_dataset: Dataset, ignore_keys: Optional[List[str]] = None, metric_key_prefix: str = "test"
+    ) -> PredictionOutput:
+        """Modified predict method that ensures indices match prediction order."""
+        self._memory_tracker.start()
         
-## Usage Example
+        # Get original dataloader
+        test_dataloader = self.get_test_dataloader(test_dataset)
+        
+        # Collect batches and indices in order
+        collected_batches, ordered_indices = collect_batches_and_indices(test_dataloader)
+        
+        # Create new dataloader with collected batches
+        ordered_dataloader = OrderedBatchDataLoader(collected_batches, test_dataloader)
+        
+        # Run evaluation with ordered batches
+        start_time = time.time()
+        eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
+        output = eval_loop(
+            ordered_dataloader, 
+            description="Prediction", 
+            ignore_keys=ignore_keys, 
+            metric_key_prefix=metric_key_prefix
+        )
+        
+        # Rest of the original predict method...
+        total_batch_size = self.args.eval_batch_size * self.args.world_size
+        if f"{metric_key_prefix}_jit_compilation_time" in output.metrics:
+            start_time += output.metrics[f"{metric_key_prefix}_jit_compilation_time"]
+        if f"{metric_key_prefix}_model_preparation_time" in output.metrics:
+            start_time += output.metrics[f"{metric_key_prefix}_model_preparation_time"]
+        output.metrics.update(
+            speed_metrics(
+                metric_key_prefix,
+                start_time,
+                num_samples=output.num_samples,
+                num_steps=math.ceil(output.num_samples / total_batch_size),
+            )
+        )
+        
+        self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
+        self._memory_tracker.stop_and_update_metrics(output.metrics)
+        
+        return PredictionOutput(
+            predictions=output.predictions, 
+            label_ids=output.label_ids, 
+            metrics=output.metrics
+        ), ordered_indices  # Now indices are guaranteed to match prediction order
+        
+def collect_batches_and_indices(dataloader: DataLoader) -> Tuple[List, np.ndarray]:
+    """
+    Collects batches and indices in iteration order.
+    
+    Args:
+        dataloader: Original dataloader
+        
+    Returns:
+        Tuple of (collected_batches, collected_indices)
+    """
+    collected_batches = []
+    collected_indices = []
+    
+    for batch in dataloader:
+        # Extract and store indices
+        if isinstance(batch, dict):
+            indices = batch.pop('indices')  # Remove indices from batch
+            if torch.is_tensor(indices):
+                indices = indices.cpu()
+            collected_indices.append(indices)
+            collected_batches.append(batch)
+        else:
+            raise ValueError("DataLoader must yield dict-style batches")
+    
+    # Combine all indices
+    if torch.is_tensor(collected_indices[0]):
+        indices = torch.cat(collected_indices)
+    elif isinstance(collected_indices[0], np.ndarray):
+        indices = np.concatenate(collected_indices)
+    else:
+        indices = [item for batch in collected_indices for item in batch]
+    
+    return collected_batches, indices
 
-# # For single GPU training:
-# sampler = SpatialGroupSampler(
-#     dataset=dataset,
-#     batch_size=64,
-#     group_size=32,
-# )
+class OrderedBatchDataLoader:
+    """A DataLoader that yields pre-collected batches in order."""
+    def __init__(self, batches, original_dataloader):
+        self.batches = batches
+        self.original_dataloader = original_dataloader
+    
+    def __iter__(self):
+        return iter(self.batches)
+    
+    def __len__(self):
+        return len(self.batches)
+    
+    @property
+    def dataset(self):
+        return self.original_dataloader.dataset
 
-# # For distributed training:
-# sampler = DistributedSpatialGroupSampler(
-#     dataset=dataset,
-#     batch_size=64,
-#     group_size=32,
-#     num_replicas=dist.get_world_size(),
-#     rank=dist.get_rank()
-# )
-
-# # Use with DataLoader
-# dataloader = DataLoader(
-#     dataset,
-#     batch_size=None,  # Controlled by sampler
-#     sampler=sampler,
-#     collate_fn=spatial_collate_fn
-# )
