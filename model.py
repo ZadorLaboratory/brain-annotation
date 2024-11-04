@@ -28,6 +28,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         pool_weight: Union[str, float] = 0.5,
         single_cell_augmentation: bool = False,
         detach_bert_embeddings: bool = False,
+        detach_single_cell_logits: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -46,6 +47,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.pool_weight = pool_weight
         self.single_cell_augmentation = single_cell_augmentation
         self.detach_bert_embeddings = detach_bert_embeddings
+        self.detach_single_cell_logits = detach_single_cell_logits
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
@@ -135,6 +137,10 @@ class HierarchicalBert(BertPreTrainedModel):
 
         self.single_cell_augmentation = config.single_cell_augmentation
         self.detach_bert_embeddings = config.detach_bert_embeddings
+        self.detach_single_cell_logits = config.detach_single_cell_logits
+
+        if self.pool_weight < 0 or self.pool_weight > 1:
+            raise ValueError("pool_weight must be in range [0, 1]")        
         
         
     def _init_weights(self, module):
@@ -249,6 +255,8 @@ class HierarchicalBert(BertPreTrainedModel):
             single_cell_logits_reshaped = self.dropout(single_cell_logits)
             single_cell_logits_reshaped = single_cell_logits_reshaped.view(batch_size, num_sentences, -1)
             pooled_single_cell_logits = torch.mean(single_cell_logits_reshaped, dim=1)
+            if self.detach_single_cell_logits:
+                pooled_single_cell_logits = pooled_single_cell_logits.detach()
             logits = pooled_single_cell_logits * self.pool_weight + logits * (1 - self.pool_weight)       
 
         loss = None

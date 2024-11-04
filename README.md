@@ -141,6 +141,8 @@ For any questions or issues, please open an issue on the GitHub repository or co
  - ^ Detaching the Bert embeddings before learning the set transformer does NOT help
  - Learning is not stable with learning rates above 1e-4
  - About 15 epochs are needed to reach the best performance
+ - Don't compare convergence rates across models trained for different amounts of epochs due to the warmup schedule
+ - 
 
 ### Findings worth a nice plot
 

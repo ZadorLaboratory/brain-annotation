@@ -85,6 +85,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             pool_weight=config.model.pool_weight,
             single_cell_augmentation=config.single_cell_augmentation,
             detach_bert_embeddings=config.model.detach_bert_embeddings,
+            detach_single_cell_logits=config.model.detach_single_cell_logits,
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         
@@ -270,7 +271,7 @@ def main(cfg: DictConfig) -> None:
     trainer.save_metrics("eval", metrics)
     
     # Test
-    test_metrics = trainer.evaluate(
+    test_metrics = trainer.predict(
         datasets["test"],
         metric_key_prefix="test"
     )
