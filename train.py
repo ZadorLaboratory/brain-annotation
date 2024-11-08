@@ -19,6 +19,7 @@ from model import HierarchicalBert, HierarchicalBertConfig
 from samplers import MultiformerTrainer
 from transformers import BertModel, BertPreTrainedModel, BertConfig, BertForSequenceClassification, Trainer
 from transformers.trainer_callback import TrainerCallback
+from torch.utils.data import DataLoader
 
 
 def setup_wandb(cfg: DictConfig):
@@ -207,19 +208,6 @@ def average_batch_location(dataset, indices, key="CCF_streamlines"):
         batch_locations.append(np.mean(locations, axis=0))
     return np.stack(batch_locations)
 
-def get_column(dataset, indices, key):
-    vals = []
-    for batch in indices:
-        vals.append(dataset[batch][key])
-    return np.stack(vals)  
-
-def add_to_dataset(dataset, values, indices, key):
-    for i, batch in enumerate(indices):
-        if key not in dataset[batch]:
-            dataset[batch][key] = []  # Initialize the key with an empty list or appropriate structure
-        dataset[batch][key] = values[i]
-    return dataset
-
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:
     # Print config
@@ -290,44 +278,34 @@ def main(cfg: DictConfig) -> None:
     trainer.log_metrics("eval", metrics)
     trainer.save_metrics("eval", metrics)
     
-    # Test
+    # Test and validation
     if cfg.run_test_set:
-        outputs, indices = trainer.predict(
-            datasets["test"],
-            metric_key_prefix="test"
-        )
+        for data_key in ["test", "validation"]:
 
-        if "single-cell" in cfg.model.pretrained_type:
-            locations = get_column(datasets["test"], indices, "CCF_streamlines")
-        else:
-            locations = average_batch_location(datasets["test"], indices)
-        labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
-        output_dict = {
-            "locations": locations,
-            "labels": labels,
-            "predictions": np.argmax(outputs.predictions, axis=-1),
-        }
+            outputs = trainer.predict(
+                datasets[data_key],
+                metric_key_prefix=data_key
+            )
 
-        # save to disk. 
-        np.save(os.path.join(cfg.output_dir, "test_brain_predictions.npy"), output_dict)
+            if "single-cell" in cfg.model.pretrained_type:
+                locations = datasets[data_key]["CCF_streamlines"]
+                indices = np.arange(len(datasets[data_key]))
+            else:
+                outputs, indices = outputs
+                locations = average_batch_location(datasets[data_key], indices)
 
-        # Log metrics
-        trainer.log_metrics("test", outputs.metrics)
+            labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+            output_dict = {
+                "locations": locations,
+                "labels": labels,
+                "predictions": np.argmax(outputs.predictions, axis=-1),
+                "indices": indices,
+            }
 
-    if cfg.save_validation_set:
-        outputs, indices = trainer.predict(
-            datasets["validation"],
-            metric_key_prefix="validation"
-        )
-
-        # Log metrics
-        trainer.log_metrics("validation", outputs.metrics)
-
-        val_dataset = add_to_dataset(datasets["validation"], outputs.predictions, indices, "predictions")
-
-        # save to disk using HF
-        val_dataset.save_to_disk(os.path.join(cfg.output_dir, "validation_predictions"))
-
+            # Log metrics
+            trainer.log_metrics(data_key, outputs.metrics)
+            # save to disk. 
+            np.save(os.path.join(cfg.output_dir, f"{data_key}_brain_predictions.npy"), output_dict)
     
     # Close wandb run
     wandb.finish()

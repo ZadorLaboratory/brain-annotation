@@ -12,7 +12,6 @@ debug: false
 single_cell_augmentation: false
 output_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 run_test_set: true
-save_validation_set: false
 
 hydra:
   run:
