@@ -207,6 +207,19 @@ def average_batch_location(dataset, indices, key="CCF_streamlines"):
         batch_locations.append(np.mean(locations, axis=0))
     return np.stack(batch_locations)
 
+def get_column(dataset, indices, key):
+    vals = []
+    for batch in indices:
+        vals.append(dataset[batch][key])
+    return np.stack(vals)  
+
+def add_to_dataset(dataset, values, indices, key):
+    for i, batch in enumerate(indices):
+        if key not in dataset[batch]:
+            dataset[batch][key] = []  # Initialize the key with an empty list or appropriate structure
+        dataset[batch][key] = values[i]
+    return dataset
+
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:
     # Print config
@@ -278,24 +291,43 @@ def main(cfg: DictConfig) -> None:
     trainer.save_metrics("eval", metrics)
     
     # Test
-    outputs, indices = trainer.predict(
-        datasets["test"],
-        metric_key_prefix="test"
-    )
+    if cfg.run_test_set:
+        outputs, indices = trainer.predict(
+            datasets["test"],
+            metric_key_prefix="test"
+        )
 
-    locations = average_batch_location(datasets["test"], indices)
-    labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
-    output_dict = {
-        "locations": locations,
-        "labels": labels,
-        "predictions": np.argmax(outputs.predictions, axis=-1),
-    }
+        if "single-cell" in cfg.model.pretrained_type:
+            locations = get_column(datasets["test"], indices, "CCF_streamlines")
+        else:
+            locations = average_batch_location(datasets["test"], indices)
+        labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+        output_dict = {
+            "locations": locations,
+            "labels": labels,
+            "predictions": np.argmax(outputs.predictions, axis=-1),
+        }
 
-    # save to disk. 
-    np.save(os.path.join(cfg.output_dir, "test_brain_predictions.npy"), output_dict)
+        # save to disk. 
+        np.save(os.path.join(cfg.output_dir, "test_brain_predictions.npy"), output_dict)
 
-    # Log metrics
-    trainer.log_metrics("test", outputs.metrics)
+        # Log metrics
+        trainer.log_metrics("test", outputs.metrics)
+
+    if cfg.save_validation_set:
+        outputs, indices = trainer.predict(
+            datasets["validation"],
+            metric_key_prefix="validation"
+        )
+
+        # Log metrics
+        trainer.log_metrics("validation", outputs.metrics)
+
+        val_dataset = add_to_dataset(datasets["validation"], outputs.predictions, indices, "predictions")
+
+        # save to disk using HF
+        val_dataset.save_to_disk(os.path.join(cfg.output_dir, "validation_predictions"))
+
     
     # Close wandb run
     wandb.finish()

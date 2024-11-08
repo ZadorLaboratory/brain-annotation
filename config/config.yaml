@@ -11,10 +11,12 @@ seed: 42
 debug: false
 single_cell_augmentation: false
 output_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+run_test_set: true
+save_validation_set: false
 
 hydra:
   run:
     dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:
     dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.override_dirname}
+    subdir: ${hydra.job.id}
