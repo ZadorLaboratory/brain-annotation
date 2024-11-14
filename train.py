@@ -208,6 +208,44 @@ def average_batch_location(dataset, indices, key="CCF_streamlines"):
         batch_locations.append(np.mean(locations, axis=0))
     return np.stack(batch_locations)
 
+def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, location_key="CCF_streamlines"):
+    """
+    Test the model by cell type.
+
+    Parameters:
+    dataset (Dataset): The dataset containing the data.
+    trainer (Trainer): The trainer object with the predict method.
+    type_col (str): The column name in the dataset that contains the cell types.
+    min_N (int): The minimum number of samples required for each cell type to be included in the test.
+
+    Returns:
+    list: A list of numpy structured arrays containing the locations, labels, predictions, and indices for each cell type.
+    """
+    # Get the unique cell types from the specified column
+    cell_type_counts = np.unique(dataset[type_col], return_counts=True)
+
+    for cell_type, count in zip(*cell_type_counts):
+
+        # Check if the number of rows is greater than min_N
+        if count > min_N:
+            # Filter the dataset for the current cell type
+            filtered_dataset = dataset.filter(lambda x: x[type_col] == cell_type)
+        
+            # Run trainer.predict on the filtered dataset
+            outputs = trainer.predict(filtered_dataset)
+            outputs, indices = outputs # indices in the original dataset (not filtered dataset)
+            # locations = average_batch_location(dataset, indices)
+
+            labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+            result = {
+                # "locations": locations,
+                "labels": labels,
+                "predictions": np.argmax(outputs.predictions, axis=-1),
+                "indices": indices,
+            }
+            
+            np.save(os.path.join(output_dir, f"cell_type_{cell_type.replace('/', '').replace(' ', '')}_test_brain_predictions.npy"), result)
+
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:
     # Print config
@@ -264,19 +302,20 @@ def main(cfg: DictConfig) -> None:
         )
         
     # Train
-    train_result = trainer.train()
-    trainer.save_model()
-    trainer.save_state()
-    
-    # Log metrics
-    metrics = train_result.metrics
-    trainer.log_metrics("train", metrics)
-    trainer.save_metrics("train", metrics)
-    
-    # Evaluate
-    metrics = trainer.evaluate()
-    trainer.log_metrics("eval", metrics)
-    trainer.save_metrics("eval", metrics)
+    if cfg.training.num_train_epochs > 0:
+        train_result = trainer.train()
+        trainer.save_model()
+        trainer.save_state()
+        
+        # Log metrics
+        metrics = train_result.metrics
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+        
+        # Evaluate
+        metrics = trainer.evaluate()
+        trainer.log_metrics("eval", metrics)
+        trainer.save_metrics("eval", metrics)
     
     # Test and validation
     if cfg.run_test_set:
@@ -306,6 +345,10 @@ def main(cfg: DictConfig) -> None:
             trainer.log_metrics(data_key, outputs.metrics)
             # save to disk. 
             np.save(os.path.join(cfg.output_dir, f"{data_key}_brain_predictions.npy"), output_dict)
+
+    if cfg.test_by_cell_type:
+        # Test by cell type
+        test_by_cell_type(datasets["test"], trainer, "H2_type", cfg.min_N, cfg.output_dir)
     
     # Close wandb run
     wandb.finish()
