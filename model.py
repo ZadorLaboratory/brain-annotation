@@ -29,7 +29,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         single_cell_augmentation: bool = False,
         detach_bert_embeddings: bool = False,
         detach_single_cell_logits: bool = False,
-        also_single_cell_loss: bool = False,
+        single_cell_loss_after_set: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -49,7 +49,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.single_cell_augmentation = single_cell_augmentation
         self.detach_bert_embeddings = detach_bert_embeddings
         self.detach_single_cell_logits = detach_single_cell_logits
-        self.also_single_cell_loss = also_single_cell_loss
+        self.single_cell_loss_after_set = single_cell_loss_after_set
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
@@ -124,7 +124,7 @@ class HierarchicalBert(BertPreTrainedModel):
         # Single-cell classification head
         if config.single_cell_augmentation:
             self.single_cell_classifier = nn.Linear(config.bert_config.hidden_size, config.num_labels)
-        elif config.also_single_cell_loss:
+        elif config.single_cell_loss_after_set:
             self.single_cell_classifier = nn.Linear(config.set_hidden_size, config.num_labels)
         else:
             self.single_cell_classifier = nn.Identity()
@@ -142,9 +142,9 @@ class HierarchicalBert(BertPreTrainedModel):
         self.single_cell_augmentation = config.single_cell_augmentation
         self.detach_bert_embeddings = config.detach_bert_embeddings
         self.detach_single_cell_logits = config.detach_single_cell_logits
-        self.also_single_cell_loss = config.also_single_cell_loss
-        assert not (self.also_single_cell_loss and self.single_cell_augmentation), \
-            "also_single_cell_loss can only be used without single_cell_augmentation"
+        self.single_cell_loss_after_set = config.single_cell_loss_after_set
+        assert not (self.single_cell_loss_after_set and self.single_cell_augmentation), \
+            "also_single_cell_loss can only be used without single_cell_augmentation" 
 
         if self.pool_weight < 0 or self.pool_weight > 1:
             raise ValueError("pool_weight must be in range [0, 1]")        
@@ -213,7 +213,7 @@ class HierarchicalBert(BertPreTrainedModel):
         # Get CLS tokens and reshape
         sentence_embeddings = bert_outputs[1]  # Pooled output
 
-        # Get single-cell classifications from base BERT?
+        # Get single-cell classifications
         if self.single_cell_augmentation:
             single_cell_logits = self.single_cell_classifier(sentence_embeddings) # shape (batch_size * num_sentences, num_labels)
 
@@ -256,7 +256,7 @@ class HierarchicalBert(BertPreTrainedModel):
             logits = self.classifier(pooled) # shape (batch_size, num_labels)
 
             # maybe try to classify each sentence (cell) separately
-            if self.also_single_cell_loss:
+            if self.single_cell_loss_after_set:
                 hidden_states_reshaped = hidden_states.view(batch_size*num_sentences, -1)
                 single_cell_logits = self.single_cell_classifier(hidden_states_reshaped)
         else:
@@ -285,11 +285,11 @@ class HierarchicalBert(BertPreTrainedModel):
             )
             loss = loss_fct(logits.view(-1, self.config.num_labels), labels.view(-1))
 
-            if self.single_cell_augmentation or self.also_single_cell_loss:
+            if self.single_cell_augmentation  or self.single_cell_loss_after_set:
                 single_cell_loss = loss_fct(single_cell_logits.view(-1, self.config.num_labels), single_cell_labels.view(-1))
                 loss += single_cell_loss
 
-        if self.also_single_cell_loss:
+        if self.single_cell_loss_after_set:
             logits = (logits, single_cell_logits)
         
         if not return_dict:

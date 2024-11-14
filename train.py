@@ -84,7 +84,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             single_cell_augmentation=config.single_cell_augmentation,
             detach_bert_embeddings=config.model.detach_bert_embeddings,
             detach_single_cell_logits=config.model.detach_single_cell_logits,
-            also_single_cell_loss=config.model.also_single_cell_loss,
+            single_cell_loss_after_set=config.model.single_cell_loss_after_set,
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         
@@ -182,18 +182,15 @@ def compute_metrics(eval_pred) -> Dict[str, float]:
     labels = eval_pred.label_ids
 
     if isinstance(labels, tuple):
-        group_labels, cell_labels = labels
+        labels, cell_labels = labels
         cell_labels = cell_labels.flatten()
     if isinstance(logits, tuple):
         group_logits, cell_logits = logits
         group_predictions = np.argmax(group_logits, axis=-1)
         cell_predictions = np.argmax(cell_logits, axis=-1)
 
-        print("group logits shape",group_logits.shape)
-        print("cell logits shape",cell_logits.shape)
-
         metrics = {
-            "accuracy": (group_predictions == group_labels).mean(),
+            "accuracy": (group_predictions == labels).mean(),
             "cell_accuracy": (cell_predictions == cell_labels).mean(),
         }
 
@@ -351,7 +348,6 @@ def main(cfg: DictConfig) -> None:
                 "predictions": predictions,
                 "indices": indices,
             }
-
             # Log metrics
             trainer.log_metrics(data_key, outputs.metrics)
             # save to disk. 
