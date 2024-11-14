@@ -2,7 +2,7 @@
 pretrained_type: "bert_only"  # Options: "none", "bert_only", "full", "single-cell"
 
 # Path or name for BERT component (used when pretrained_type is "bert_only")
-bert_path_or_name: "/grid/zador/data_norepl/Ari/transcriptomics/geneformer_models/retraining_1707495054775589/models"  # barseq_pretrained_cls
+bert_path_or_name: "/home/benjami/mnt/zador_data_norepl/Ari/transcriptomics/geneformer_models/retraining_1707495054775589/models"  # barseq_pretrained_cls
 
 # Path for full model (used when pretrained_type is "full")
 model_path: null  
@@ -15,6 +15,7 @@ dropout_prob: 0.1 # dropout on cells in group pooling
 pool_weight: 0.5 # 'learned' or float 0-1. 1 is a model average of single-cell logits, 0 is all set transformer.
 detach_bert_embeddings: false
 detach_single_cell_logits: true
+also_single_cell_loss: false
 
 # Optional BERT config parameters (used when pretrained_type is "none")
 bert_params:

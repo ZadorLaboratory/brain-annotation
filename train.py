@@ -84,6 +84,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             single_cell_augmentation=config.single_cell_augmentation,
             detach_bert_embeddings=config.model.detach_bert_embeddings,
             detach_single_cell_logits=config.model.detach_single_cell_logits,
+            also_single_cell_loss=config.model.also_single_cell_loss,
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         
@@ -176,25 +177,32 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
 
 
 def compute_metrics(eval_pred) -> Dict[str, float]:
+    
     logits = eval_pred.predictions
     labels = eval_pred.label_ids
-    predictions = np.argmax(logits, axis=-1)
 
     if isinstance(labels, tuple):
-        labels = labels[0]
+        group_labels, cell_labels = labels
+        cell_labels = cell_labels.flatten()
+    if isinstance(logits, tuple):
+        group_logits, cell_logits = logits
+        group_predictions = np.argmax(group_logits, axis=-1)
+        cell_predictions = np.argmax(cell_logits, axis=-1)
 
-    metrics = {
-        "accuracy": (predictions == labels).mean(),
-    }
-    
-    # Updated wandb confusion matrix call
-    # wandb.log({
-    #     "confusion_matrix": wandb.plot.confusion_matrix(
-    #         preds=predictions,
-    #         y_true=labels,
-    #         class_names=[f"class_{i}" for i in range(logits.shape[1])]  # number of classes from logits
-    #     )
-    # })
+        print("group logits shape",group_logits.shape)
+        print("cell logits shape",cell_logits.shape)
+
+        metrics = {
+            "accuracy": (group_predictions == group_labels).mean(),
+            "cell_accuracy": (cell_predictions == cell_labels).mean(),
+        }
+
+    else:
+        predictions = np.argmax(logits, axis=-1)
+
+        metrics = {
+            "accuracy": (predictions == labels).mean(),
+        }
     
     return metrics
 
@@ -323,6 +331,7 @@ def main(cfg: DictConfig) -> None:
                 metric_key_prefix=data_key
             )
 
+            # print("outputs", outputs)
             if "single-cell" in cfg.model.pretrained_type:
                 locations = datasets[data_key]["CCF_streamlines"]
                 indices = np.arange(len(datasets[data_key]))
@@ -330,11 +339,16 @@ def main(cfg: DictConfig) -> None:
                 outputs, indices = outputs
                 locations = average_batch_location(datasets[data_key], indices)
 
+            if cfg.model.also_single_cell_loss:
+                predictions = np.argmax(outputs.predictions[0], axis=-1)
+            else:
+                predictions = np.argmax(outputs.predictions, axis=-1)
+
             labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
             output_dict = {
                 "locations": locations,
                 "labels": labels,
-                "predictions": np.argmax(outputs.predictions, axis=-1),
+                "predictions": predictions,
                 "indices": indices,
             }
 

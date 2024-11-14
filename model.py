@@ -29,6 +29,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         single_cell_augmentation: bool = False,
         detach_bert_embeddings: bool = False,
         detach_single_cell_logits: bool = False,
+        also_single_cell_loss: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -48,6 +49,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.single_cell_augmentation = single_cell_augmentation
         self.detach_bert_embeddings = detach_bert_embeddings
         self.detach_single_cell_logits = detach_single_cell_logits
+        self.also_single_cell_loss = also_single_cell_loss
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
@@ -120,8 +122,10 @@ class HierarchicalBert(BertPreTrainedModel):
         self.dropout = nn.Dropout(config.dropout_prob)
 
         # Single-cell classification head
-        if config.single_cell_augmentation or config.also_single_cell_loss:
+        if config.single_cell_augmentation:
             self.single_cell_classifier = nn.Linear(config.bert_config.hidden_size, config.num_labels)
+        elif config.also_single_cell_loss:
+            self.single_cell_classifier = nn.Linear(config.set_hidden_size, config.num_labels)
         else:
             self.single_cell_classifier = nn.Identity()
         
@@ -285,6 +289,8 @@ class HierarchicalBert(BertPreTrainedModel):
                 single_cell_loss = loss_fct(single_cell_logits.view(-1, self.config.num_labels), single_cell_labels.view(-1))
                 loss += single_cell_loss
 
+        if self.also_single_cell_loss:
+            logits = (logits, single_cell_logits)
         
         if not return_dict:
             output = (logits,) + (hidden_states,)
