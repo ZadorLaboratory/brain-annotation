@@ -3,7 +3,6 @@ from typing import Dict, Optional
 
 import hydra
 import wandb
-from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
 import torch
@@ -17,9 +16,7 @@ from sklearn.model_selection import train_test_split
 
 from model import HierarchicalBert, HierarchicalBertConfig
 from samplers import MultiformerTrainer
-from transformers import BertModel, BertPreTrainedModel, BertConfig, BertForSequenceClassification, Trainer
-from transformers.trainer_callback import TrainerCallback
-from torch.utils.data import DataLoader
+from transformers import BertModel, BertConfig, BertForSequenceClassification, Trainer
 
 
 def setup_wandb(cfg: DictConfig):
