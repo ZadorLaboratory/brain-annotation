@@ -336,7 +336,7 @@ def main(cfg: DictConfig) -> None:
                 outputs, indices = outputs
                 locations = average_batch_location(datasets[data_key], indices)
 
-            if cfg.model.also_single_cell_loss:
+            if cfg.model.single_cell_loss_after_set:
                 predictions = np.argmax(outputs.predictions[0], axis=-1)
             else:
                 predictions = np.argmax(outputs.predictions, axis=-1)
