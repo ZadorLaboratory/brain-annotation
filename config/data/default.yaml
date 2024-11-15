@@ -1,4 +1,4 @@
-dataset_path: /home/benjami/brain-annotation/data/train_test_barseq.dataset  # Path to tokenized DatasetDict
+dataset_path: /grid/zador/data_norepl/Ari/transcriptomics/barseq/Chen2023/train_test_barseq.dataset  # Path to tokenized DatasetDict
 group_size: 32
 window_size: 0.1
 validation_split: 0.1

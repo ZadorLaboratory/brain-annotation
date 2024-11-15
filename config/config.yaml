@@ -12,6 +12,8 @@ debug: false
 single_cell_augmentation: false
 output_dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
 run_test_set: true
+test_by_cell_type: false
+min_N: 5000
 
 hydra:
   run:
