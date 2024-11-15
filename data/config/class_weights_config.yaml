@@ -1,0 +1,26 @@
+defaults:
+  - _self_
+
+# Output directory for saved weights
+output_dir: "."
+
+# Dataset configuration
+data:
+  dataset_path: "/home/benjami/brain-annotation/data/train_test_barseq.dataset"  # Path to the HuggingFace dataset
+  split: "train"  # Which split to use for calculating weights
+  label_key: "area_label"  # Key for labels in the dataset
+
+# Weighting configuration
+weighting:
+  method: "balanced"  # One of: "inverse", "balanced", "effective"
+  beta: 0.999  # Only used for "effective" method
+
+# W&B configuration
+wandb:
+  enabled: true
+  project: "spatial-transformer"
+  entity: "zadorlab"
+  name: "calculate_weights"
+  group: "preprocessing"
+  tags: ["class_weights"]
+  notes: "Calculate class weights for balanced training"
