@@ -1,5 +1,6 @@
 import os
-from typing import Dict, Optional
+from typing import Dict, Optional, List
+from sklearn.metrics import classification_report
 
 import hydra
 import wandb
@@ -178,10 +179,21 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
     })
 
 
-def compute_metrics(eval_pred) -> Dict[str, float]:
-    
+def compute_metrics(eval_pred, label_names: Optional[Dict[int, str]] = None) -> Dict[str, float]:
     logits = eval_pred.predictions
     labels = eval_pred.label_ids
+
+    # Create id2label mapping if provided, converting keys to regular Python ints
+    if label_names:
+        id2label = {int(k): v for k, v in label_names.items()}
+    else:
+        # Handle tuple case for logits
+        logits_shape = logits[0].shape[-1] if isinstance(logits, tuple) else logits.shape[-1]
+        id2label = {i: str(i) for i in range(logits_shape)}
+
+    # Get all possible class labels (based on logits dimension)
+    all_labels = list(range(logits[0].shape[-1] if isinstance(logits, tuple) else logits.shape[-1]))
+    target_names = [id2label[i] for i in all_labels]
 
     if isinstance(labels, tuple):
         labels, cell_labels = labels
@@ -191,19 +203,80 @@ def compute_metrics(eval_pred) -> Dict[str, float]:
         group_predictions = np.argmax(group_logits, axis=-1)
         cell_predictions = np.argmax(cell_logits, axis=-1)
 
+        # Get detailed classification report for group predictions
+        report = classification_report(
+            labels, 
+            group_predictions,
+            output_dict=True,
+            labels=all_labels,  # Specify all possible labels
+            target_names=target_names,
+            zero_division=0
+        )
+
         metrics = {
             "accuracy": (group_predictions == labels).mean(),
             "cell_accuracy": (cell_predictions == cell_labels).mean(),
+            "classification_report": report
         }
+
+        # Extract only scalar metrics for logging
+        scalar_metrics = {
+            "accuracy": metrics["accuracy"],
+            "cell_accuracy": metrics["cell_accuracy"]
+        }
+        
+        # Add per-class metrics in a wandb-friendly format
+        for label in report:
+            if label not in ["accuracy", "macro avg", "weighted avg"]:
+                scalar_metrics[f"f1_{label}"] = report[label]["f1-score"]
+                scalar_metrics[f"precision_{label}"] = report[label]["precision"]
+                scalar_metrics[f"recall_{label}"] = report[label]["recall"]
+
+        # Add aggregate metrics
+        scalar_metrics.update({
+            "f1_macro": report["macro avg"]["f1-score"],
+            "f1_weighted": report["weighted avg"]["f1-score"],
+        })
+
+        return scalar_metrics
 
     else:
         predictions = np.argmax(logits, axis=-1)
+        
+        # Get detailed classification report
+        report = classification_report(
+            labels, 
+            predictions,
+            output_dict=True,
+            labels=all_labels,  # Specify all possible labels
+            target_names=target_names,
+            zero_division=0
+        )
 
         metrics = {
             "accuracy": (predictions == labels).mean(),
+            "classification_report": report
         }
-    
-    return metrics
+
+        # Extract only scalar metrics for logging
+        scalar_metrics = {
+            "accuracy": metrics["accuracy"]
+        }
+        
+        # Add per-class metrics in a wandb-friendly format
+        for label in report:
+            if label not in ["accuracy", "macro avg", "weighted avg"]:
+                scalar_metrics[f"f1_{label}"] = report[label]["f1-score"]
+                scalar_metrics[f"precision_{label}"] = report[label]["precision"]
+                scalar_metrics[f"recall_{label}"] = report[label]["recall"]
+
+        # Add aggregate metrics
+        scalar_metrics.update({
+            "f1_macro": report["macro avg"]["f1-score"],
+            "f1_weighted": report["weighted avg"]["f1-score"],
+        })
+
+        return scalar_metrics
 
 def average_batch_location(dataset, indices, key="CCF_streamlines"):
     batch_locations = []
@@ -212,7 +285,7 @@ def average_batch_location(dataset, indices, key="CCF_streamlines"):
         batch_locations.append(np.mean(locations, axis=0))
     return np.stack(batch_locations)
 
-def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, location_key="CCF_streamlines"):
+def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, label_names=None, location_key="CCF_streamlines"):
     """
     Test the model by cell type.
 
@@ -241,11 +314,16 @@ def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, location_ke
             # locations = average_batch_location(dataset, indices)
 
             labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+            predictions = np.argmax(outputs.predictions, axis=-1)
+
+            # Add label names to output if available
             result = {
-                # "locations": locations,
                 "labels": labels,
-                "predictions": np.argmax(outputs.predictions, axis=-1),
+                "predictions": predictions,
                 "indices": indices,
+                "label_names": label_names if label_names else None,
+                "predicted_names": [label_names[str(p)] for p in predictions] if label_names else None,
+                "true_names": [label_names[str(l)] for l in labels] if label_names else None
             }
             
             np.save(os.path.join(output_dir, f"cell_type_{cell_type.replace('/', '').replace(' ', '')}_test_brain_predictions.npy"), result)
@@ -291,22 +369,21 @@ def main(cfg: DictConfig) -> None:
     # Create model with class weights
     model = create_model(cfg, class_weights)
     
+    # Update trainer parameters to include label names
+    trainer_params = {
+        "model": model,
+        "args": TrainingArguments(**cfg.training),
+        "train_dataset": datasets["train"],
+        "eval_dataset": datasets["validation"],
+        "compute_metrics": lambda pred: compute_metrics(pred, cfg.data.label_names),
+    }
+
     # Initialize trainer
     if "single-cell" in cfg.model.pretrained_type:
-        trainer = Trainer(
-            model=model,
-            args=TrainingArguments(**cfg.training),
-            train_dataset=datasets["train"],
-            eval_dataset=datasets["validation"],
-            compute_metrics=compute_metrics,
-        )
+        trainer = Trainer(**trainer_params)
     else:
         trainer = MultiformerTrainer(
-            model=model,
-            args=TrainingArguments(**cfg.training),
-            train_dataset=datasets["train"],
-            eval_dataset=datasets["validation"],
-            compute_metrics=compute_metrics,
+            **trainer_params,
             spatial_group_size=cfg.data.group_size,
             spatial_label_key="labels",
             coordinate_key='CCF_streamlines',
@@ -352,11 +429,15 @@ def main(cfg: DictConfig) -> None:
                 predictions = np.argmax(outputs.predictions, axis=-1)
 
             labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+            # Include label names in output
             output_dict = {
                 "locations": locations,
                 "labels": labels,
                 "predictions": predictions,
                 "indices": indices,
+                "label_names": cfg.data.label_names,
+                "predicted_names": [cfg.data.label_names[p] for p in predictions],
+                "true_names": [cfg.data.label_names[l] for l in labels]
             }
             # Log metrics
             trainer.log_metrics(data_key, outputs.metrics)
@@ -365,7 +446,14 @@ def main(cfg: DictConfig) -> None:
 
     if cfg.test_by_cell_type:
         # Test by cell type
-        test_by_cell_type(datasets["test"], trainer, "H2_type", cfg.min_N, cfg.output_dir)
+        test_by_cell_type(
+            datasets["test"], 
+            trainer, 
+            "H2_type", 
+            cfg.min_N, 
+            cfg.output_dir,
+            label_names=cfg.data.label_names
+        )
     
     # Close wandb run
     wandb.finish()
