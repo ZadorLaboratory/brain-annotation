@@ -271,6 +271,7 @@ class DistributedSpatialGroupSampler(Sampler):
 class SpatialGroupCollator:
     """
     Collator that handles grouping of spatially-related sequences and their labels.
+    Basically, this reshapes the data appropriately to form batches of (batch_size, group_size, seq_len).
     Optionally handles attention masks and indices if present in input features.
     """
     group_size: int
@@ -280,6 +281,8 @@ class SpatialGroupCollator:
     padding: str = "max_length"
     add_single_cell_labels: bool = True
     index_key: Optional[str] = None  # New parameter for index tracking
+    relative_positions: bool = False  # New parameter for XYZ relative position encoding
+    coordinate_key: str = "CCF_streamlines"  # New parameter for coordinate key
     
     def __post_init__(self):
         if self.feature_keys is None:
@@ -351,6 +354,13 @@ class SpatialGroupCollator:
                 # Handle indices if present
                 if self.index_key and self.index_key in item:
                     group_dict["indices"].append(torch.tensor(item[self.index_key]))
+
+            # Add relative positions
+            if self.relative_positions:
+                coordinates = np.array([item[self.coordinate_key] for item in group])
+                mean_position = np.mean(coordinates, axis=0)
+                relative_positions = coordinates - mean_position
+                group_dict["relative_positions"] = torch.tensor(relative_positions, dtype=torch.float32)
             
             # Stack features
             for key in feature_keys:
@@ -362,7 +372,7 @@ class SpatialGroupCollator:
             # Stack indices if present
             if self.index_key and "indices" in group_dict:
                 group_dict["indices"] = torch.stack(group_dict["indices"])
-            
+                        
             # Compute majority label for the group
             group_labels = torch.stack(group_labels)
             label_counts = Counter(group_labels.tolist())
@@ -387,6 +397,8 @@ class MultiformerTrainer(Trainer):
                  spatial_group_size=32, 
                  spatial_label_key='area_labels', 
                  index_key='uuid',
+                 coordinate_key='CCF_streamlines',
+                 relative_positions=False,
                  **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
@@ -394,10 +406,13 @@ class MultiformerTrainer(Trainer):
             feature_keys=["input_ids",],  # Add other feature keys as needed
             pad_token_id=0, # Adjust as needed
             add_single_cell_labels=add_single_cell_labels,
-            index_key=index_key  # Add index tracking
+            index_key=index_key,  # Add index tracking
+            coordinate_key="CCF_streamlines",
+            relative_positions=relative_positions
         )
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
+        self.coordinate_key = coordinate_key
         
         super().__init__(*args, **kwargs)
 
@@ -407,17 +422,6 @@ class MultiformerTrainer(Trainer):
 
         assert self.args.train_batch_size % spatial_group_size == 0, \
             "train_batch_size must be divisible by spatial_group_size"
-    
-    def evaluate(self, *args, **kwargs):
-        metrics = super().evaluate(*args, **kwargs)
-        
-        # Log your parameter
-        param_value = self.model.pool_weight.item()
-        wandb.log({
-            "pool_weight": param_value,
-        })
-        
-        return metrics
 
     def _get_train_sampler(self) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(self.train_dataset, collections.abc.Sized):
@@ -437,7 +441,8 @@ class MultiformerTrainer(Trainer):
                 dataset=self.train_dataset,
                 batch_size=self.args.train_batch_size,
                 group_size=self.spatial_group_size,
-                seed=self.args.seed
+                seed=self.args.seed,
+                coordinate_key=self.coordinate_key
             )
         else:
             return DistributedSpatialGroupSampler(
@@ -447,6 +452,7 @@ class MultiformerTrainer(Trainer):
                 rank=self.args.process_index,
                 seed=self.args.seed,
                 group_size=self.spatial_group_size,
+                coordinate_key=self.coordinate_key
             )
 
     def _get_eval_sampler(self, eval_dataset, precomputed=True) -> Optional[torch.utils.data.sampler.Sampler]:
@@ -468,7 +474,8 @@ class MultiformerTrainer(Trainer):
                 batch_size=self.args.eval_batch_size,
                 group_size=self.spatial_group_size,
                 seed=self.args.seed,
-                precomputed=self.precomputed_eval_sampler_data if precomputed else None
+                precomputed=self.precomputed_eval_sampler_data if precomputed else None,
+                coordinate_key=self.coordinate_key
             )
         else:
             return DistributedSpatialGroupSampler(
@@ -478,14 +485,15 @@ class MultiformerTrainer(Trainer):
                 rank=self.args.process_index,
                 seed=self.args.seed,
                 group_size=self.spatial_group_size,
-                precomputed=self.precomputed_eval_sampler_data if precomputed else None
+                precomputed=self.precomputed_eval_sampler_data if precomputed else None,
+                coordinate_key=self.coordinate_key
             )
 
     def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
         """
         Returns the test [`~torch.utils.data.DataLoader`].
 
-        Subclass and override this method if you want to inject some custom behavior.
+        Same behavior as normal but custom in that we pass precomputed=False to _get_eval_sampler.
 
         Args:
             test_dataset (`torch.utils.data.Dataset`, *optional*):

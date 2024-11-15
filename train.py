@@ -81,10 +81,12 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             dropout_prob=config.model.dropout_prob,
             class_weights=class_weights,
             pool_weight=config.model.pool_weight,
-            single_cell_augmentation=config.single_cell_augmentation,
-            detach_bert_embeddings=config.model.detach_bert_embeddings,
-            detach_single_cell_logits=config.model.detach_single_cell_logits,
-            single_cell_loss_after_set=config.model.single_cell_loss_after_set,
+            single_cell_augmentation=config.model.get("single_cell_augmentation", False),
+            detach_bert_embeddings=config.model.get("detach_bert_embeddings", False),
+            detach_single_cell_logits=config.model.get("detach_single_cell_logits", False),
+            single_cell_loss_after_set=config.model.get("single_cell_loss_after_set", False),
+            use_relative_positions=config.model.get("use_relative_positions", False),
+            position_encoding_dim=config.model.get("position_encoding_dim", 32),
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         
@@ -253,6 +255,12 @@ def main(cfg: DictConfig) -> None:
     # Print config
     print(OmegaConf.to_yaml(cfg))
 
+    if 'single-cell' not in cfg.model.pretrained_type:
+        assert cfg.data.group_size is not None, "group_size must be specified for multiformer models"
+        assert cfg.training.remove_unused_columns is False, "remove_unused_columns must be False for multiformer models so that position info is available for grouping"
+    else:
+        assert cfg.training.remove_unused_columns, "remove_unused_columns must be True for single-cell models"
+
     if cfg.debug:
         # Set PyTorch debug options
         torch.autograd.set_detect_anomaly(True)
@@ -301,6 +309,8 @@ def main(cfg: DictConfig) -> None:
             compute_metrics=compute_metrics,
             spatial_group_size=cfg.data.group_size,
             spatial_label_key="labels",
+            coordinate_key='CCF_streamlines',
+            relative_positions=cfg.model.use_relative_positions,
         )
         
     # Train
