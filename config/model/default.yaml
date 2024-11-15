@@ -1,21 +1,29 @@
 # config/model/default.yaml
-pretrained_type: "bert_only"  # Options: "none", "bert_only", "full", "single-cell"
+pretrained_type: "bert_only"  # Options: "none", "bert_only", "full", "single-cell", "single-cell-from-scratch"
 
 # Path or name for BERT component (used when pretrained_type is "bert_only")
-bert_path_or_name: "/home/benjami/mnt/zador_data_norepl/Ari/transcriptomics/geneformer_models/retraining_1707495054775589/models"  # barseq_pretrained_cls
+bert_path_or_name: "/home/benjami/mnt/zador_data_norepl/Ari/transcriptomics/geneformer_models/retraining_1707495054775589/models"
 
 # Path for full model (used when pretrained_type is "full")
-model_path: null  
+model_path: null
 
+# Model architecture parameters
 num_labels: 290
 num_set_layers: 4
 set_hidden_size: 768
 num_attention_heads: 8
-dropout_prob: 0.1 # dropout on cells in group pooling
-pool_weight: 0.5 # 'learned' or float 0-1. 1 is a model average of single-cell logits, 0 is all set transformer.
-detach_bert_embeddings: false
-detach_single_cell_logits: true
-single_cell_loss_after_set: false
+dropout_prob: 0.1
+
+# Model behavior flags
+pool_weight: 0.5  # Weight for single-cell predictions (0-1 or "learned")
+single_cell_augmentation: false  # Whether to use additional single-cell classification
+detach_bert_embeddings: false  # Whether to detach BERT embeddings
+detach_single_cell_logits: true  # Whether to detach single-cell logits
+single_cell_loss_after_set: false  # Whether to apply single-cell loss after set transformer
+
+# Position encoding parameters
+use_relative_positions: false  # Whether to use relative position encoding
+position_encoding_dim: 32  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
 
 # Optional BERT config parameters (used when pretrained_type is "none")
 bert_params:

@@ -30,6 +30,8 @@ class HierarchicalBertConfig(PretrainedConfig):
         detach_bert_embeddings: bool = False,
         detach_single_cell_logits: bool = False,
         single_cell_loss_after_set: bool = False,
+        use_relative_positions: bool = False,
+        position_encoding_dim: int = 32,  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -50,6 +52,8 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.detach_bert_embeddings = detach_bert_embeddings
         self.detach_single_cell_logits = detach_single_cell_logits
         self.single_cell_loss_after_set = single_cell_loss_after_set
+        self.use_relative_positions = use_relative_positions
+        self.position_encoding_dim = position_encoding_dim
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
@@ -91,6 +95,20 @@ class SetTransformerLayer(nn.Module):
         
         return x, attn_weights if need_weights else None
 
+class PositionalEncoder(nn.Module):
+    """Encode 3D positions into higher dimensional space"""
+    def __init__(self, output_dim: int):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(3, output_dim // 2),
+            nn.ReLU(),
+            nn.Linear(output_dim // 2, output_dim),
+            nn.LayerNorm(output_dim)
+        )
+    
+    def forward(self, positions: torch.Tensor) -> torch.Tensor:
+        return self.encoder(positions)
+
 class HierarchicalBert(BertPreTrainedModel):
 
     config_class = HierarchicalBertConfig
@@ -101,7 +119,21 @@ class HierarchicalBert(BertPreTrainedModel):
         
         # Initialize BERT
         self.bert = BertModel(config.bert_config)
-        
+
+        # Position handling and calculating final dimension size for set transformer
+        self.use_relative_positions = config.use_relative_positions
+        self.original_set_dim = config.set_hidden_size
+        if self.use_relative_positions:
+            self.position_encoder = PositionalEncoder(config.position_encoding_dim)
+            # Adjust set transformer input dimension
+            final_dim = config.set_hidden_size + config.position_encoding_dim
+            if final_dim % config.num_attention_heads != 0:
+                raise ValueError(
+                    f"Combined dimension (set_hidden_size + position_encoding_dim = {final_dim}) "
+                    f"must be divisible by num_attention_heads ({config.num_attention_heads})"
+                )
+            config.set_hidden_size = final_dim
+
         # Initialize set transformer layers
         self.set_layers = nn.ModuleList([
             SetTransformerLayer(config)
@@ -109,10 +141,10 @@ class HierarchicalBert(BertPreTrainedModel):
         ])
         
         # Project if needed
-        if config.bert_config.hidden_size != config.set_hidden_size:
+        if config.bert_config.hidden_size != self.original_set_dim:
             self.hidden_projection = nn.Linear(
                 config.bert_config.hidden_size,
-                config.set_hidden_size
+                self.original_set_dim
             )
         else:
             self.hidden_projection = nn.Identity()
@@ -125,7 +157,7 @@ class HierarchicalBert(BertPreTrainedModel):
         if config.single_cell_augmentation:
             self.single_cell_classifier = nn.Linear(config.bert_config.hidden_size, config.num_labels)
         elif config.single_cell_loss_after_set:
-            self.single_cell_classifier = nn.Linear(config.set_hidden_size, config.num_labels)
+            self.single_cell_classifier = nn.Linear(final_dim, config.num_labels)
         else:
             self.single_cell_classifier = nn.Identity()
         
@@ -148,8 +180,7 @@ class HierarchicalBert(BertPreTrainedModel):
 
         if self.pool_weight < 0 or self.pool_weight > 1:
             raise ValueError("pool_weight must be in range [0, 1]")        
-        
-        
+
     def _init_weights(self, module):
         """Initialize the weights - called by BertPreTrainedModel"""
         if isinstance(module, nn.Linear):
@@ -175,6 +206,7 @@ class HierarchicalBert(BertPreTrainedModel):
             return_dict: Optional[bool] = None,
             single_cell_labels: Optional[torch.Tensor] = None,
             indices: Optional[torch.Tensor] = None,
+            relative_positions: Optional[torch.Tensor] = None,
             ) -> Union[Tuple, SequenceClassifierOutput]:
 
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -228,9 +260,16 @@ class HierarchicalBert(BertPreTrainedModel):
         
         # Project if necessary
         sentence_embeddings = self.hidden_projection(sentence_embeddings)
-        assert sentence_embeddings.shape == (batch_size, num_sentences, self.config.set_hidden_size), \
-            f"Expected projected embeddings shape (batch_size, num_sentences, set_hidden_size), got {sentence_embeddings.shape}"
+        assert sentence_embeddings.shape == (batch_size, num_sentences, self.original_set_dim), \
+            f"Expected projected embeddings shape (batch_size, num_sentences, original_set_dim), got {sentence_embeddings.shape}"
         
+        # Handle relative positions if enabled
+        if self.use_relative_positions and relative_positions is not None:
+            position_features = self.position_encoder(relative_positions)
+                
+            # Concatenate position features with sentence embeddings
+            sentence_embeddings = torch.cat([sentence_embeddings, position_features], dim=-1)
+
         # Process through Set Transformer layers
         hidden_states = sentence_embeddings
         all_hidden_states = (hidden_states,) if output_hidden_states else None
