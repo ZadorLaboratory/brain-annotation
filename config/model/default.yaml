@@ -2,7 +2,7 @@
 pretrained_type: "bert_only"  # Options: "none", "bert_only", "full", "single-cell", "single-cell-from-scratch"
 
 # Path or name for BERT component (used when pretrained_type is "bert_only")
-bert_path_or_name: "/grid/zador/data_norepl/Ari/transcriptomics/Ari/transcriptomics/geneformer_models/retraining_1707495054775589/models"
+bert_path_or_name: "/grid/zador/data_norepl/Ari/transcriptomics/geneformer_models/retraining_1707495054775589/models"
 
 # Path for full model (used when pretrained_type is "full")
 model_path: null
