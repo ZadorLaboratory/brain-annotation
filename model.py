@@ -11,6 +11,7 @@ from transformers import (
     BertConfig,
     PretrainedConfig
 )
+import torch.nn.functional as F
 
 @dataclass
 class HierarchicalBertConfig(PretrainedConfig):
@@ -32,6 +33,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         single_cell_loss_after_set: bool = False,
         use_relative_positions: bool = False,
         position_encoding_dim: int = 32,  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
+        position_encoding_type: str = "mlp",
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -54,6 +56,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.single_cell_loss_after_set = single_cell_loss_after_set
         self.use_relative_positions = use_relative_positions
         self.position_encoding_dim = position_encoding_dim
+        self.position_encoding_type = position_encoding_type
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
@@ -95,16 +98,53 @@ class SetTransformerLayer(nn.Module):
         
         return x, attn_weights if need_weights else None
 
-class PositionalEncoder(nn.Module):
-    """Encode 3D positions into higher dimensional space"""
+class SinusoidalEncoder(nn.Module):
+    """Encode positions using sinusoidal embeddings"""
     def __init__(self, output_dim: int):
         super().__init__()
-        self.encoder = nn.Sequential(
-            nn.Linear(3, output_dim // 2),
-            nn.ReLU(),
-            nn.Linear(output_dim // 2, output_dim),
-            nn.LayerNorm(output_dim)
+        assert output_dim % 6 == 0, f"output_dim must be divisible by 6 for sinusoidal encoding. Got {output_dim}"
+        self.dim_per_component = output_dim // 3  # 2 components each for r, theta, z
+        self.frequencies = torch.exp(
+            torch.arange(0, self.dim_per_component, 2) * -(4.605 / self.dim_per_component)
         )
+    
+    def _sinusoidal_embedding(self, x: torch.Tensor) -> torch.Tensor:
+        # x shape: (batch, num_points)
+        freqs = self.frequencies.to(x.device)
+        emb = x.unsqueeze(-1) * freqs
+        return torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
+    
+    def forward(self, positions: torch.Tensor) -> torch.Tensor:
+        # Convert x,y to polar coordinates
+        x, y, z = positions[..., 0], positions[..., 1], positions[..., 2]
+        r = torch.sqrt(x**2 + y**2)
+        theta = torch.atan2(y, x)
+        
+        # Generate embeddings for each component
+        r_emb = self._sinusoidal_embedding(r)
+        theta_emb = self._sinusoidal_embedding(theta)
+        z_emb = self._sinusoidal_embedding(z)
+        
+        # Concatenate all embeddings
+        return torch.cat([r_emb, theta_emb, z_emb], dim=-1)
+
+class PositionalEncoder(nn.Module):
+    """Encode 3D positions into higher dimensional space"""
+    def __init__(self, output_dim: int, encoding_type: str = "mlp"):
+        super().__init__()
+        self.encoding_type = encoding_type
+        
+        if encoding_type == "mlp":
+            self.encoder = nn.Sequential(
+                nn.Linear(3, output_dim // 2),
+                nn.ReLU(),
+                nn.Linear(output_dim // 2, output_dim),
+                nn.LayerNorm(output_dim)
+            )
+        elif encoding_type == "sinusoidal":
+            self.encoder = SinusoidalEncoder(output_dim)
+        else:
+            raise ValueError(f"Unknown encoding type: {encoding_type}")
     
     def forward(self, positions: torch.Tensor) -> torch.Tensor:
         return self.encoder(positions)
@@ -124,7 +164,10 @@ class HierarchicalBert(BertPreTrainedModel):
         self.use_relative_positions = config.use_relative_positions
         self.original_set_dim = final_dim = config.set_hidden_size
         if self.use_relative_positions:
-            self.position_encoder = PositionalEncoder(config.position_encoding_dim)
+            self.position_encoder = PositionalEncoder(
+                config.position_encoding_dim,
+                encoding_type=getattr(config, 'position_encoding_type', 'mlp')
+            )
             # Adjust set transformer input dimension
             final_dim = config.set_hidden_size + config.position_encoding_dim
             if final_dim % config.num_attention_heads != 0:

@@ -88,6 +88,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             single_cell_loss_after_set=config.model.get("single_cell_loss_after_set", False),
             use_relative_positions=config.model.get("use_relative_positions", False),
             position_encoding_dim=config.model.get("position_encoding_dim", 32),
+            position_encoding_type=config.model.get("position_encoding_type", "mlp"),
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         

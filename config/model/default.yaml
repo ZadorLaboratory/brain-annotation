@@ -23,7 +23,8 @@ single_cell_loss_after_set: false  # Whether to apply single-cell loss after set
 
 # Position encoding parameters
 use_relative_positions: false  # Whether to use relative position encoding
-position_encoding_dim: 32  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
+position_encoding_dim: 48  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
+position_encoding_type: "mlp"  # Options: "mlp" or "sinusoidal". position_encoding_dim must be divisble by 6 for sinusoidal.
 
 # Optional BERT config parameters (used when pretrained_type is "none")
 bert_params:
