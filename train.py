@@ -436,8 +436,6 @@ def main(cfg: DictConfig) -> None:
                 "predictions": predictions,
                 "indices": indices,
                 "label_names": cfg.data.label_names,
-                "predicted_names": [cfg.data.label_names[p] for p in predictions],
-                "true_names": [cfg.data.label_names[l] for l in labels]
             }
             # Log metrics
             trainer.log_metrics(data_key, outputs.metrics)

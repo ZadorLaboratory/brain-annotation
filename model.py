@@ -122,7 +122,7 @@ class HierarchicalBert(BertPreTrainedModel):
 
         # Position handling and calculating final dimension size for set transformer
         self.use_relative_positions = config.use_relative_positions
-        self.original_set_dim = config.set_hidden_size
+        self.original_set_dim = final_dim = config.set_hidden_size
         if self.use_relative_positions:
             self.position_encoder = PositionalEncoder(config.position_encoding_dim)
             # Adjust set transformer input dimension
