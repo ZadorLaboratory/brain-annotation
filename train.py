@@ -33,16 +33,10 @@ def setup_wandb(cfg: DictConfig):
     )
 
 def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = None) -> HierarchicalBert:
-    """
-    Create model based on pretraining configuration.
+    """Create model based on pretraining configuration."""
+    # Convert class weights to list if present for JSON serialization
+    class_weights_list = class_weights.tolist() if class_weights is not None else None
     
-    Args:
-        config.model.pretrained_type: One of ["none", "bert_only", "full"]
-        config.model.bert_path_or_name: Either:
-            - Hub model name (e.g. "bert-base-uncased") 
-            - Path to pretrained BERT weights
-        config.model.model_path: Path to full pretrained hierarchical model
-    """
     if config.model.pretrained_type == "full":
         if not config.model.model_path:
             raise ValueError("model_path must be specified when pretrained_type is 'full'")
@@ -51,7 +45,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
         model = HierarchicalBert.from_pretrained(
             config.model.model_path,
             num_labels=config.model.num_labels,
-            class_weights=class_weights,
+            class_weights=class_weights,  # Pass tensor to model
             pool_weight=config.model.pool_weight,
         )
     elif config.model.pretrained_type == "single-cell":
@@ -80,7 +74,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             set_hidden_size=config.model.set_hidden_size,
             num_attention_heads=config.model.num_attention_heads,
             dropout_prob=config.model.dropout_prob,
-            class_weights=class_weights,
+            class_weights=class_weights_list,  # Pass list to config
             pool_weight=config.model.pool_weight,
             single_cell_augmentation=config.model.get("single_cell_augmentation", False),
             detach_bert_embeddings=config.model.get("detach_bert_embeddings", False),
@@ -99,6 +93,10 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
         if config.model.pretrained_type == "bert_only":
             pretrained_bert = BertModel.from_pretrained(config.model.bert_path_or_name)
             model.bert.load_state_dict(pretrained_bert.state_dict())
+
+        # Set class weights as tensor in model after initialization
+        if hasattr(model, 'class_weights') and class_weights is not None:
+            model.class_weights = class_weights  # Set tensor directly on model
 
     return model
 
