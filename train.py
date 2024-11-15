@@ -387,6 +387,7 @@ def main(cfg: DictConfig) -> None:
             spatial_label_key="labels",
             coordinate_key='CCF_streamlines',
             relative_positions=cfg.model.use_relative_positions,
+            relative_positions2=cfg.model.get("use_relative_positions2", False),
         )
         
     # Train

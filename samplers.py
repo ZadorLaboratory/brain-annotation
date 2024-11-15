@@ -280,9 +280,10 @@ class SpatialGroupCollator:
     pad_token_id: int = 0
     padding: str = "max_length"
     add_single_cell_labels: bool = True
-    index_key: Optional[str] = None  # New parameter for index tracking
-    relative_positions: bool = False  # New parameter for XYZ relative position encoding
-    coordinate_key: str = "CCF_streamlines"  # New parameter for coordinate key
+    index_key: Optional[str] = None
+    relative_positions: bool = False  
+    coordinate_key: str = "CCF_streamlines"
+    relative_positions2: bool = False 
     
     def __post_init__(self):
         if self.feature_keys is None:
@@ -361,6 +362,11 @@ class SpatialGroupCollator:
                 mean_position = np.mean(coordinates, axis=0)
                 relative_positions = coordinates - mean_position
                 group_dict["relative_positions"] = torch.tensor(relative_positions, dtype=torch.float32)
+            if self.relative_positions2:
+                coordinates = np.array([item[self.coordinate_key] for item in group])
+                mean_position = np.mean(coordinates, axis=0, keepdims=True)
+                coordinates[:,:2] = coordinates[:,:2] - mean_position[:,:2] # Center around mean, but not for Z
+                group_dict["relative_positions"] = torch.tensor(coordinates, dtype=torch.float32)
             
             # Stack features
             for key in feature_keys:
@@ -399,6 +405,7 @@ class MultiformerTrainer(Trainer):
                  index_key='uuid',
                  coordinate_key='CCF_streamlines',
                  relative_positions=False,
+                 relative_positions2=False,
                  **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
@@ -408,7 +415,8 @@ class MultiformerTrainer(Trainer):
             add_single_cell_labels=add_single_cell_labels,
             index_key=index_key,  # Add index tracking
             coordinate_key="CCF_streamlines",
-            relative_positions=relative_positions
+            relative_positions=relative_positions,
+            relative_positions2=relative_positions2
         )
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
