@@ -14,6 +14,10 @@ from transformers import (
 import torch.nn.functional as F
 
 @dataclass
+class SequenceClassifierOutputWithSingleCell(SequenceClassifierOutput):
+    single_cell_logits: Optional[torch.Tensor] = None
+
+@dataclass
 class HierarchicalBertConfig(PretrainedConfig):
     """Configuration class for HierarchicalBert."""
     
@@ -370,9 +374,6 @@ class HierarchicalBert(BertPreTrainedModel):
             if self.single_cell_augmentation  or self.single_cell_loss_after_set:
                 single_cell_loss = loss_fct(single_cell_logits.view(-1, self.config.num_labels), single_cell_labels.view(-1))
                 loss += single_cell_loss
-
-        if self.single_cell_loss_after_set:
-            logits = (logits, single_cell_logits)
         
         if not return_dict:
             output = (logits,) + (hidden_states,)
@@ -381,13 +382,16 @@ class HierarchicalBert(BertPreTrainedModel):
             if output_attentions:
                 output = output + (all_self_attentions,)
             return ((loss,) + output) if loss is not None else output
+
+        print("single-cell-logits shape", single_cell_logits.shape)
             
-        return SequenceClassifierOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=all_hidden_states if output_hidden_states else None,
-            attentions=all_self_attentions if output_attentions else None,
-        )
+        return SequenceClassifierOutputWithSingleCell(
+                loss=loss,
+                logits=logits,
+                hidden_states=all_hidden_states if output_hidden_states else None,
+                attentions=all_self_attentions if output_attentions else None,
+                single_cell_logits=single_cell_logits if self.single_cell_loss_after_set else None
+            )
     def _set_gradient_checkpointing(self, module, value=False):
         if isinstance(module, (BertModel, SetTransformerLayer)):
             module.gradient_checkpointing = value

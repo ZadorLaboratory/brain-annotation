@@ -179,6 +179,12 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
 
 
 def compute_metrics(eval_pred, label_names: Optional[Dict[int, str]] = None) -> Dict[str, float]:
+
+    if isinstance(eval_pred.predictions, tuple):
+        print("len logits", len(eval_pred.predictions))
+        print("pred shapes", eval_pred.predictions[0].shape, eval_pred.predictions[1].shape)
+    else:
+        print("pred shapes", eval_pred.predictions.shape)
     logits = eval_pred.predictions
     labels = eval_pred.label_ids
 
@@ -409,6 +415,8 @@ def main(cfg: DictConfig) -> None:
     # Test and validation
     if cfg.run_test_set:
         for data_key in ["test", "validation"]:
+
+            trainer.accelerator.gradient_state._reset_state() # Fixes an odd bug where the trainer thinks the dataloader is finished so truncates further batches incorrectly
 
             outputs = trainer.predict(
                 datasets[data_key],
