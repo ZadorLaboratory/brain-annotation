@@ -278,14 +278,21 @@ def compute_metrics(eval_pred, label_names: Optional[Dict[int, str]] = None) -> 
 
         return scalar_metrics
 
-def average_batch_location(dataset, indices, key="CCF_streamlines", index_key="uuid"):
+def average_batch_location(data, batch_indices, all_indices):
+    """Average locations for each batch of indices.
+    """
     batch_locations = []
-    for batch in indices:
-        # Get rows where index_key matches the batch indices
-        mask = np.isin(dataset[index_key], batch)
-        locations = dataset[key][mask]
-        batch_locations.append(np.mean(locations, axis=0))
-    return np.stack(batch_locations)
+    
+    for batch in batch_indices:
+        # Create boolean mask for this batch
+        mask = np.isin(all_indices, batch)
+        # Get locations for this batch
+        batch_locs = data[mask]
+        # Average the locations if we found any
+        if len(batch_locs) > 0:
+            batch_locations.append(np.mean(batch_locs, axis=0))
+            
+    return np.stack(batch_locations) if batch_locations else np.array([])
 
 def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, label_names=None, location_key="CCF_streamlines"):
     """
@@ -425,7 +432,7 @@ def main(cfg: DictConfig) -> None:
                 indices = np.arange(len(datasets[data_key]))
             else:
                 outputs, indices = outputs
-                locations = average_batch_location(datasets[data_key], indices)
+                locations = average_batch_location(np.array(datasets[data_key]["CCF_streamlines"]), indices, datasets[data_key]["uuid"])
 
             if cfg.model.single_cell_loss_after_set:
                 predictions = np.argmax(outputs.predictions[0], axis=-1)
