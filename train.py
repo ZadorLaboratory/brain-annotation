@@ -80,9 +80,9 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             detach_bert_embeddings=config.model.get("detach_bert_embeddings", False),
             detach_single_cell_logits=config.model.get("detach_single_cell_logits", False),
             single_cell_loss_after_set=config.model.get("single_cell_loss_after_set", False),
-            use_relative_positions=config.model.get("use_relative_positions", False),
-            position_encoding_dim=config.model.get("position_encoding_dim", 32),
-            position_encoding_type=config.model.get("position_encoding_type", "mlp"),
+            use_relative_positions=config.model.relative_positions.enabled,
+            position_encoding_dim=config.model.relative_positions.encoding_dim,
+            position_encoding_type=config.model.relative_positions.encoding_type,
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         
@@ -392,8 +392,8 @@ def main(cfg: DictConfig) -> None:
             spatial_group_size=cfg.data.group_size,
             spatial_label_key="labels",
             coordinate_key='CCF_streamlines',
-            relative_positions=cfg.model.use_relative_positions,
-            relative_positions2=cfg.model.get("use_relative_positions2", False),
+            relative_positions=cfg.model.relative_positions.enabled,
+            absolute_Z=cfg.model.relative_positions.absolute_Z,
         )
         
     # Train

@@ -22,9 +22,11 @@ detach_single_cell_logits: true  # Whether to detach single-cell logits
 single_cell_loss_after_set: false  # Whether to apply single-cell loss after set transformer
 
 # Position encoding parameters
-use_relative_positions2: false  # Whether to use relative position encoding – but Z dimension is absolute coords.
-position_encoding_dim: 48  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
-position_encoding_type: "mlp"  # Options: "mlp" or "sinusoidal". position_encoding_dim must be divisble by 6 for sinusoidal.
+relative_positions:
+  enabled: false
+  absolute_Z: false
+  encoding_dim: 48  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
+  encoding_type: "mlp"  # Options: "mlp" or "sinusoidal". position_encoding_dim must be divisble by 6 for sinusoidal.
 
 # Optional BERT config parameters (used when pretrained_type is "none")
 bert_params:

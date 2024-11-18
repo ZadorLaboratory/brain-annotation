@@ -283,7 +283,7 @@ class SpatialGroupCollator:
     index_key: Optional[str] = None
     relative_positions: bool = False  
     coordinate_key: str = "CCF_streamlines"
-    relative_positions2: bool = False 
+    absolute_Z: bool = False 
     
     def __post_init__(self):
         if self.feature_keys is None:
@@ -359,12 +359,10 @@ class SpatialGroupCollator:
             # Add relative positions
             if self.relative_positions:
                 coordinates = np.array([item[self.coordinate_key] for item in group])
-                mean_position = np.mean(coordinates, axis=0)
+                mean_position = np.mean(coordinates, axis=0, keepdims=True)
                 relative_positions = coordinates - mean_position
                 group_dict["relative_positions"] = torch.tensor(relative_positions, dtype=torch.float32)
-            if self.relative_positions2:
-                coordinates = np.array([item[self.coordinate_key] for item in group])
-                mean_position = np.mean(coordinates, axis=0, keepdims=True)
+            if self.absolute_Z:
                 coordinates[:,:2] = coordinates[:,:2] - mean_position[:,:2] # Center around mean, but not for Z
                 group_dict["relative_positions"] = torch.tensor(coordinates, dtype=torch.float32)
             
@@ -405,7 +403,7 @@ class MultiformerTrainer(Trainer):
                  index_key='uuid',
                  coordinate_key='CCF_streamlines',
                  relative_positions=False,
-                 relative_positions2=False,
+                 absolute_Z=False,
                  **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
@@ -416,7 +414,7 @@ class MultiformerTrainer(Trainer):
             index_key=index_key,  # Add index tracking
             coordinate_key="CCF_streamlines",
             relative_positions=relative_positions,
-            relative_positions2=relative_positions2
+            absolute_Z=absolute_Z
         )
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
