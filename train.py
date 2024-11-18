@@ -180,11 +180,6 @@ def prepare_datasets(dataset_dict: DatasetDict, config: DictConfig) -> DatasetDi
 
 def compute_metrics(eval_pred, label_names: Optional[Dict[int, str]] = None) -> Dict[str, float]:
 
-    if isinstance(eval_pred.predictions, tuple):
-        print("len logits", len(eval_pred.predictions))
-        print("pred shapes", eval_pred.predictions[0].shape, eval_pred.predictions[1].shape)
-    else:
-        print("pred shapes", eval_pred.predictions.shape)
     logits = eval_pred.predictions
     labels = eval_pred.label_ids
 
@@ -283,10 +278,12 @@ def compute_metrics(eval_pred, label_names: Optional[Dict[int, str]] = None) -> 
 
         return scalar_metrics
 
-def average_batch_location(dataset, indices, key="CCF_streamlines"):
+def average_batch_location(dataset, indices, key="CCF_streamlines", index_key="uuid"):
     batch_locations = []
     for batch in indices:
-        locations = dataset[batch][key]
+        # Get rows where index_key matches the batch indices
+        mask = np.isin(dataset[index_key], batch)
+        locations = dataset[key][mask]
         batch_locations.append(np.mean(locations, axis=0))
     return np.stack(batch_locations)
 
@@ -423,7 +420,6 @@ def main(cfg: DictConfig) -> None:
                 metric_key_prefix=data_key
             )
 
-            # print("outputs", outputs)
             if "single-cell" in cfg.model.pretrained_type:
                 locations = datasets[data_key]["CCF_streamlines"]
                 indices = np.arange(len(datasets[data_key]))
