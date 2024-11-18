@@ -382,8 +382,6 @@ class HierarchicalBert(BertPreTrainedModel):
             if output_attentions:
                 output = output + (all_self_attentions,)
             return ((loss,) + output) if loss is not None else output
-
-        print("single-cell-logits shape", single_cell_logits.shape)
             
         return SequenceClassifierOutputWithSingleCell(
                 loss=loss,
