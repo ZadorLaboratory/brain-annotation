@@ -154,15 +154,19 @@ class PositionalEncoder(nn.Module):
         return self.encoder(positions)
 
 class HierarchicalBert(BertPreTrainedModel):
-
     config_class = HierarchicalBertConfig
     supports_gradient_checkpointing = True
 
     def __init__(self, config: HierarchicalBertConfig):
         super().__init__(config)
         
-        # Initialize BERT
-        self.bert = BertModel(config.bert_config)
+        # Initialize BERT 
+        if isinstance(config.bert_config, BertConfig):
+            self.bert = BertModel(config.bert_config)
+        else:
+            # Handle the case where bert_config is a dict
+            self.bert = BertModel(BertConfig(**config.bert_config))
+            self.config.bert_config = self.bert.config
 
         # Position handling and calculating final dimension size for set transformer
         self.use_relative_positions = config.use_relative_positions
