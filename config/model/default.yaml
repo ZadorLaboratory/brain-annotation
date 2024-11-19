@@ -12,11 +12,9 @@ num_attention_heads: 8
 dropout_prob: 0.1
 
 # Model behavior flags
-pool_weight: 0.5  # Weight for single-cell predictions (0-1 or "learned")
-single_cell_augmentation: false  # Whether to use additional single-cell classification
 detach_bert_embeddings: false  # Whether to detach BERT embeddings
-detach_single_cell_logits: true  # Whether to detach single-cell logits
 single_cell_loss_after_set: false  # Whether to apply single-cell loss after set transformer
+single_cell_vs_group_weight: 0.5
 
 # Position encoding parameters
 relative_positions:

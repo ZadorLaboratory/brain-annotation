@@ -46,7 +46,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             config.model.bert_path_or_name,
             num_labels=config.model.num_labels,
             class_weights=class_weights,  # Pass tensor to model
-            pool_weight=config.model.pool_weight,
+            single_cell_vs_group_weight=config.model.single_cell_vs_group_weight,
         )
     elif config.model.pretrained_type == "single-cell":
         model = BertForSequenceClassification.from_pretrained(
@@ -75,10 +75,8 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             num_attention_heads=config.model.num_attention_heads,
             dropout_prob=config.model.dropout_prob,
             class_weights=class_weights_list,  # Pass list to config
-            pool_weight=config.model.pool_weight,
-            single_cell_augmentation=config.model.get("single_cell_augmentation", False),
+            single_cell_vs_group_weight=config.model.single_cell_vs_group_weight,
             detach_bert_embeddings=config.model.get("detach_bert_embeddings", False),
-            detach_single_cell_logits=config.model.get("detach_single_cell_logits", False),
             single_cell_loss_after_set=config.model.get("single_cell_loss_after_set", False),
             use_relative_positions=config.model.relative_positions.enabled,
             position_encoding_dim=config.model.relative_positions.encoding_dim,

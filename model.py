@@ -30,10 +30,8 @@ class HierarchicalBertConfig(PretrainedConfig):
         num_attention_heads: int = 8,
         dropout_prob: float = 0.1,
         class_weights: Optional[torch.Tensor] = None,
-        pool_weight: Union[str, float] = 0.5,
-        single_cell_augmentation: bool = False,
+        single_cell_vs_group_weight: Union[str, float] = 0.5,
         detach_bert_embeddings: bool = False,
-        detach_single_cell_logits: bool = False,
         single_cell_loss_after_set: bool = False,
         use_relative_positions: bool = False,
         position_encoding_dim: int = 32,  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
@@ -53,10 +51,8 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.num_attention_heads = num_attention_heads
         self.dropout_prob = dropout_prob
         self.class_weights = class_weights
-        self.pool_weight = pool_weight
-        self.single_cell_augmentation = single_cell_augmentation
+        self.single_cell_vs_group_weight = single_cell_vs_group_weight
         self.detach_bert_embeddings = detach_bert_embeddings
-        self.detach_single_cell_logits = detach_single_cell_logits
         self.single_cell_loss_after_set = single_cell_loss_after_set
         self.use_relative_positions = use_relative_positions
         self.position_encoding_dim = position_encoding_dim
@@ -205,9 +201,7 @@ class HierarchicalBert(BertPreTrainedModel):
         self.dropout = nn.Dropout(config.dropout_prob)
 
         # Single-cell classification head
-        if config.single_cell_augmentation:
-            self.single_cell_classifier = nn.Linear(config.bert_config.hidden_size, config.num_labels)
-        elif config.single_cell_loss_after_set:
+        if config.single_cell_loss_after_set:
             self.single_cell_classifier = nn.Linear(final_dim, config.num_labels)
         else:
             self.single_cell_classifier = nn.Identity()
@@ -215,22 +209,12 @@ class HierarchicalBert(BertPreTrainedModel):
         # Store class weights
         self.class_weights = config.class_weights
 
-        if config.pool_weight == "learned":
-            self.pool_weight = nn.Parameter(torch.ones(1)*0.5, requires_grad=True)
-            raise NotImplementedError("Learned pooling weights are not yet implemented")
-        else:
-            self.pool_weight = torch.tensor(config.pool_weight)
-            self.pool_weight.requires_grad = False
-
-        self.single_cell_augmentation = config.single_cell_augmentation
+        self.single_cell_vs_group_weight = config.single_cell_vs_group_weight
         self.detach_bert_embeddings = config.detach_bert_embeddings
-        self.detach_single_cell_logits = config.detach_single_cell_logits
         self.single_cell_loss_after_set = config.single_cell_loss_after_set
-        assert not (self.single_cell_loss_after_set and self.single_cell_augmentation), \
-            "also_single_cell_loss can only be used without single_cell_augmentation" 
 
-        if self.pool_weight < 0 or self.pool_weight > 1:
-            raise ValueError("pool_weight must be in range [0, 1]")        
+        if self.single_cell_vs_group_weight < 0 or self.single_cell_vs_group_weight > 1:
+            raise ValueError("single_cell_vs_group_weight must be in range [0, 1]")        
 
     def _init_weights(self, module):
         """Initialize the weights - called by BertPreTrainedModel"""
@@ -296,10 +280,6 @@ class HierarchicalBert(BertPreTrainedModel):
         # Get CLS tokens and reshape
         sentence_embeddings = bert_outputs[1]  # Pooled output
 
-        # Get single-cell classifications
-        if self.single_cell_augmentation:
-            single_cell_logits = self.single_cell_classifier(sentence_embeddings) # shape (batch_size * num_sentences, num_labels)
-
         # Potentially detach embeddings
         if self.detach_bert_embeddings:
             sentence_embeddings = sentence_embeddings.detach()
@@ -326,42 +306,28 @@ class HierarchicalBert(BertPreTrainedModel):
         all_hidden_states = (hidden_states,) if output_hidden_states else None
         all_self_attentions = () if output_attentions else None
         
-        if self.pool_weight < 1:
-            for layer in self.set_layers:
-                hidden_states, attn_weights = layer(
-                    hidden_states,
-                    output_attentions=output_attentions
-                )
-                
-                if output_hidden_states:
-                    all_hidden_states = all_hidden_states + (hidden_states,)
-                if output_attentions and attn_weights is not None:
-                    all_self_attentions = all_self_attentions + (attn_weights,)
+        for layer in self.set_layers:
+            hidden_states, attn_weights = layer(
+                hidden_states,
+                output_attentions=output_attentions
+            )
             
-            # Pool sentences (mean pooling)
-            pooled = torch.mean(hidden_states, dim=1)
-            pooled = self.dropout(pooled)
-            
-            # Classification
-            logits = self.classifier(pooled) # shape (batch_size, num_labels)
+            if output_hidden_states:
+                all_hidden_states = all_hidden_states + (hidden_states,)
+            if output_attentions and attn_weights is not None:
+                all_self_attentions = all_self_attentions + (attn_weights,)
+        
+        # Pool sentences (mean pooling)
+        pooled = torch.mean(hidden_states, dim=1)
+        pooled = self.dropout(pooled)
+        
+        # Classification
+        logits = self.classifier(pooled) # shape (batch_size, num_labels)
 
-            # maybe try to classify each sentence (cell) separately
-            if self.single_cell_loss_after_set:
-                hidden_states_reshaped = hidden_states.view(batch_size*num_sentences, -1)
-                single_cell_logits = self.single_cell_classifier(hidden_states_reshaped)
-        else:
-            logits = 0
-            all_hidden_states = None
-            all_self_attentions = None
-
-        # For the final prediction, average in pooled single-cell logits
-        if self.single_cell_augmentation:
-            single_cell_logits_reshaped = self.dropout(single_cell_logits)
-            single_cell_logits_reshaped = single_cell_logits_reshaped.view(batch_size, num_sentences, -1)
-            pooled_single_cell_logits = torch.mean(single_cell_logits_reshaped, dim=1)
-            if self.detach_single_cell_logits:
-                pooled_single_cell_logits = pooled_single_cell_logits.detach()
-            logits = pooled_single_cell_logits * self.pool_weight + logits * (1 - self.pool_weight)       
+        # maybe try to classify each sentence (cell) separately
+        if self.single_cell_loss_after_set:
+            hidden_states_reshaped = hidden_states.view(batch_size*num_sentences, -1)
+            single_cell_logits = self.single_cell_classifier(hidden_states_reshaped)    
 
         loss = None
         if labels is not None:
@@ -375,9 +341,9 @@ class HierarchicalBert(BertPreTrainedModel):
             )
             loss = loss_fct(logits.view(-1, self.config.num_labels), labels.view(-1))
 
-            if self.single_cell_augmentation  or self.single_cell_loss_after_set:
+            if self.single_cell_loss_after_set:
                 single_cell_loss = loss_fct(single_cell_logits.view(-1, self.config.num_labels), single_cell_labels.view(-1))
-                loss += single_cell_loss
+                loss = self.single_cell_vs_group_weight * single_cell_loss + (1 - self.single_cell_vs_group_weight) * loss
         
         if not return_dict:
             output = (logits,) + (hidden_states,)
