@@ -17,7 +17,7 @@ min_N: 5000
 
 hydra:
   run:
-    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ${output_dir}
   sweep:
-    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: ${output_dir}
     subdir: ${hydra.job.id}

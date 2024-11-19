@@ -38,12 +38,12 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
     class_weights_list = class_weights.tolist() if class_weights is not None else None
     
     if config.model.pretrained_type == "full":
-        if not config.model.model_path:
+        if not config.model.bert_path_or_name:
             raise ValueError("model_path must be specified when pretrained_type is 'full'")
             
         # Load full pretrained hierarchical model
         model = HierarchicalBert.from_pretrained(
-            config.model.model_path,
+            config.model.bert_path_or_name,
             num_labels=config.model.num_labels,
             class_weights=class_weights,  # Pass tensor to model
             pool_weight=config.model.pool_weight,
@@ -436,10 +436,13 @@ def main(cfg: DictConfig) -> None:
 
             if cfg.model.single_cell_loss_after_set:
                 predictions = np.argmax(outputs.predictions[0], axis=-1)
+                single_cell_predictions = np.argmax(outputs.predictions[1], axis=-1)
             else:
                 predictions = np.argmax(outputs.predictions, axis=-1)
+                single_cell_predictions = None
 
             labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+            single_cell_labels = outputs.label_ids[1] if isinstance(outputs.label_ids, tuple) else None
             # Include label names in output
             output_dict = {
                 "locations": locations,
@@ -447,6 +450,8 @@ def main(cfg: DictConfig) -> None:
                 "predictions": predictions,
                 "indices": indices,
                 "label_names": cfg.data.label_names,
+                "single_cell_labels": single_cell_labels,
+                "single_cell_predictions": single_cell_predictions,
             }
             # Log metrics
             trainer.log_metrics(data_key, outputs.metrics)
