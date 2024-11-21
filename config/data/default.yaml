@@ -303,3 +303,12 @@ max_eval_samples: null
 class_weights:
   enabled: false
   path: null  # Path to numpy array of class weights
+
+# For benchmarks
+train_h5ad_files:
+  - "filt_neurons_D076_1L_CCFv2_newtypes.h5ad"
+  - "filt_neurons_D077_1L_CCFv2_newtypes.h5ad"
+  - "filt_neurons_D078_1L_CCFv2_newtypes.h5ad"
+test_h5ad_files:
+  - "filt_neurons_D079_3L_CCFv2_newtypes.h5ad"
+h5ad_directory: "data/anndatas/"
