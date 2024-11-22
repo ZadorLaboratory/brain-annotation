@@ -44,8 +44,8 @@ def get_dataloaders(datasets: DatasetDict, cfg: DictConfig) -> Dict[str, DataLoa
     # Create minimal training arguments
     training_args = TrainingArguments(
         output_dir=cfg.output_dir,
-        per_device_train_batch_size=cfg.data.group_size*2,
-        per_device_eval_batch_size=cfg.data.group_size*2,
+        per_device_train_batch_size=cfg.data.group_size*32,
+        per_device_eval_batch_size=cfg.data.group_size*32,
         remove_unused_columns=False,  # Important for MultiformerTrainer
     )
 
@@ -66,7 +66,7 @@ def get_dataloaders(datasets: DatasetDict, cfg: DictConfig) -> Dict[str, DataLoa
     dataloaders = {
         "train": trainer.get_train_dataloader(),
         "validation": trainer.get_eval_dataloader(datasets["validation"]),
-        "test": trainer.get_eval_dataloader(datasets["test"])
+        "test": trainer.get_test_dataloader(datasets["test"])
     }
     
     return dataloaders
@@ -246,10 +246,12 @@ def get_bulk_expression(adata: Tuple[ad.AnnData, ad.AnnData], indices: np.ndarra
     train_adata, test_adata = adata
     current_adata = test_adata if is_test else train_adata
     
-    # Convert indices to list and handle as boolean mask
+    # Ensure indices is 2D even when group_size=1
+    indices = np.asarray(indices)
+    if indices.ndim == 1:
+        indices = indices.reshape(1, -1)
+    
     features = []
-    if len(indices.shape) == 1:
-        indices = [indices]
     for batch_indices in indices:
         mask = np.zeros(len(current_adata), dtype=bool)
         mask[batch_indices] = True
@@ -364,8 +366,10 @@ def get_h3type_histogram(
         index_map: Mapping from dataset indices to array indices
         n_types: Total number of H3 types
     """
-    indices = np.array(indices)
-    indices = np.atleast_2d(indices)
+    # Ensure indices is 2D: (n_groups, group_size)
+    indices = np.asarray(indices)
+    if indices.ndim == 1:
+        indices = indices.reshape(1, -1)  # One group with multiple cells
     batch_size = indices.shape[0]
     histogram = np.zeros((batch_size, n_types))
 

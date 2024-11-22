@@ -12,13 +12,13 @@ random_forest:
   min_samples_leaf: 1
   max_features: "sqrt"
   bootstrap: true
-  class_weight: "balanced"
+  class_weight: null # or "balanced"
   n_jobs: -1
   random_state: 42
-  verbose: 1
+  verbose: 0
 
 debug: false
 seed: 42
-output_dir: "outputs"
+output_dir: "benchmarks"
 run_bulk_expression: true
 run_h3type: true
