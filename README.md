@@ -12,6 +12,11 @@ To install the required dependencies, follow these steps:
     cd <repository-directory>
     ```
 
+2. (If not already installed) **Install micromamba**
+    ```
+    "${SHELL}" <(curl -L micro.mamba.pm/install.sh)
+    ```
+
 2. **Create a virtual environment:**
     ```sh
     source create_env.sh
