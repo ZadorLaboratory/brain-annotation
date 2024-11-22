@@ -423,14 +423,6 @@ def run_h3type_rf(
     train_features = np.vstack(train_features)
     train_labels = np.concatenate(train_labels)
 
-        # Before evaluate_method call
-    print(f"Predictions shape: {len(predictions)}")
-    print(f"Labels shape: {len(labels)}")
-    print(f"Indices shape: {len(indices)}")
-    
-    # Verify shapes are equal
-    assert len(predictions) == len(labels), "Predictions and labels must have same length"
-    
     
     rf.fit(train_features, train_labels)
     
@@ -446,7 +438,7 @@ def run_h3type_rf(
             batch_indices = batch['indices'].cpu().numpy()
             indices.extend(batch_indices)
             histogram = get_h3type_histogram(
-                indices, 
+                batch_indices, 
                 h3_arrays[name],
                 index_maps[name],
                 n_types
@@ -454,7 +446,7 @@ def run_h3type_rf(
             pred = rf.predict(histogram)
             predictions.extend(pred)
             labels.extend(batch['labels'].cpu().numpy())
-
+            
         evaluate_method(
             np.array(predictions),
             np.array(labels),
@@ -471,8 +463,8 @@ def main(cfg: DictConfig) -> None:
 
     if cfg.debug:
         # Limit dataset size for faster iteration
-        cfg.data.max_train_samples = 100
-        cfg.data.max_eval_samples = 100
+        cfg.data.max_train_samples = 10000
+        cfg.data.max_eval_samples = 10000
     
     # Setup wandb
     setup_wandb(cfg)
