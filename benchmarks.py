@@ -313,7 +313,7 @@ def run_bulk_expression_rf(
             pred = rf.predict(features)
             predictions.extend(pred)
             labels.extend(batch['labels'].cpu().numpy())
-        
+
         evaluate_method(
             np.array(predictions),
             np.array(labels),
@@ -421,7 +421,16 @@ def run_h3type_rf(
         train_labels.append(batch['labels'].cpu().numpy())
         
     train_features = np.vstack(train_features)
-    train_labels = np.concatenate(train_labels)\
+    train_labels = np.concatenate(train_labels)
+
+        # Before evaluate_method call
+    print(f"Predictions shape: {len(predictions)}")
+    print(f"Labels shape: {len(labels)}")
+    print(f"Indices shape: {len(indices)}")
+    
+    # Verify shapes are equal
+    assert len(predictions) == len(labels), "Predictions and labels must have same length"
+    
     
     rf.fit(train_features, train_labels)
     
@@ -445,7 +454,7 @@ def run_h3type_rf(
             pred = rf.predict(histogram)
             predictions.extend(pred)
             labels.extend(batch['labels'].cpu().numpy())
-        
+
         evaluate_method(
             np.array(predictions),
             np.array(labels),
