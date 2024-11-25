@@ -82,6 +82,10 @@ for filename in train_filenames:
     tokenized_dataset = tokenized_dataset.filter(lambda x: not np.isnan(np.sum(x['CCF_streamlines'])))
     tokenized_dataset = tokenized_dataset.map(lambda x: {'area_label': annoation2area_class[x['CCFano']]})
 
+    # Add in the animal name
+    animal_name = filename.split('_')[2]
+    tokenized_dataset = tokenized_dataset.map(lambda x: {'animal_name': animal_name})
+
     datasets.append(tokenized_dataset)
 
 dataset = interleave_datasets(datasets)
@@ -101,6 +105,10 @@ for filename in test_filenames:
     tokenized_dataset = tokenized_dataset.filter(lambda x: not np.isnan(np.sum(x['CCF_streamlines'])))
     tokenized_dataset = tokenized_dataset.map(lambda x: {'area_label': annoation2area_class[x['CCFano']]})
 
+    # Add in the animal name
+    animal_name = filename.split('_')[2]
+    tokenized_dataset = tokenized_dataset.map(lambda x: {'animal_name': animal_name})
+    
     datasets.append(tokenized_dataset)
 
 test_dataset = interleave_datasets(datasets)
