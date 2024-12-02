@@ -257,71 +257,6 @@ def get_bulk_expression(adata: Tuple[ad.AnnData, ad.AnnData], indices: np.ndarra
         features.append(np.array(current_adata[mask].X.mean(axis=0)))
     return np.vstack(features)
 
-def run_bulk_expression_rf(
-    datasets: DatasetDict,
-    adata: Tuple[ad.AnnData, ad.AnnData],
-    cfg: DictConfig
-) -> None:
-    """Run random forest on bulk expression data."""
-    
-    # Initialize random forest and scaler
-    rf = RandomForestClassifier(**cfg.random_forest)
-    scaler = StandardScaler()
-    
-    # Get dataloaders using trainer infrastructure
-    dataloaders = get_dataloaders(datasets, cfg)
-    
-    # Training
-    print("Collecting training features...")
-    train_features = []
-    train_labels = []
-    train_indices = []
-    
-    for batch in dataloaders["train"]:
-        indices = batch['indices'].cpu().numpy()
-        train_indices.extend(indices)
-        bulk_expression = get_bulk_expression(adata, indices, is_test=False)
-        train_features.append(bulk_expression)
-        train_labels.append(batch['labels'].cpu().numpy())
-    
-    train_features = np.vstack(train_features)
-    train_features = scaler.fit_transform(train_features)
-    train_labels = np.concatenate(train_labels)
-
-    print("Train features:", train_features.shape)
-    print("Train labels:", train_labels.shape)
-    
-    print("Training random forest...")
-    rf.fit(train_features, train_labels)
-    
-    # Evaluate on all sets
-    for name in ['train','validation', 'test']:
-        loader = dataloaders[name]
-        is_test = name == 'test'
-        print(f"Evaluating on {name} set...")
-        predictions = []
-        labels = []
-        indices = []
-        
-        for batch in loader:
-            batch_indices = batch['indices'].cpu().numpy()
-            indices.extend(batch_indices)
-            bulk_expression = get_bulk_expression(adata, batch_indices, is_test=is_test)
-            features = scaler.transform(bulk_expression)
-            
-            pred = rf.predict(features)
-            predictions.extend(pred)
-            labels.extend(batch['labels'].cpu().numpy())
-
-        evaluate_method(
-            np.array(predictions),
-            np.array(labels),
-            np.array(indices),
-            f"bulk_expression_{name}",
-            cfg.data.label_names,
-            cfg.output_dir
-        )
-
 def prepare_h3type_data(dataset: DatasetDict) -> Tuple[Dict[str, np.ndarray], Dict[str, int], Dict[str, Dict[int, int]]]:
     """
     Prepare H3 type data for fast access during training.
@@ -384,75 +319,6 @@ def get_h3type_histogram(
             histogram[i] /= total
 
     return histogram
-
-def run_h3type_rf(
-    datasets: DatasetDict,
-    cfg: DictConfig
-) -> None:
-    """Run random forest on H3 type histograms."""
-    
-    # Prepare data once
-    h3_arrays, type_to_idx, index_maps = prepare_h3type_data(datasets)
-    n_types = len(type_to_idx)
-    
-    # Get dataloaders
-    dataloaders = get_dataloaders(datasets, cfg)
-    
-    # Initialize random forest
-    rf = RandomForestClassifier(**cfg.random_forest)
-    
-    # Training
-    print("Training H3 type random forest...")
-    train_features = []
-    train_labels = []
-    train_indices = []
-    
-    for batch in dataloaders["train"]:
-        indices = batch['indices'].cpu().numpy()
-        train_indices.extend(indices)
-        histogram = get_h3type_histogram(
-            indices, 
-            h3_arrays['train'],
-            index_maps['train'],
-            n_types
-        )
-        train_features.append(histogram)
-        train_labels.append(batch['labels'].cpu().numpy())
-        
-    train_features = np.vstack(train_features)
-    train_labels = np.concatenate(train_labels)
-    
-    rf.fit(train_features, train_labels)
-    
-    # Evaluate on all sets
-    for name in ['train','validation', 'test']:
-        loader = dataloaders[name]
-        print(f"Evaluating on {name} set...")
-        predictions = []
-        labels = []
-        indices = []
-        
-        for batch in loader:
-            batch_indices = batch['indices'].cpu().numpy()
-            indices.extend(batch_indices)
-            histogram = get_h3type_histogram(
-                batch_indices, 
-                h3_arrays[name],
-                index_maps[name],
-                n_types
-            )
-            pred = rf.predict(histogram)
-            predictions.extend(pred)
-            labels.extend(batch['labels'].cpu().numpy())
-            
-        evaluate_method(
-            np.array(predictions),
-            np.array(labels),
-            np.array(indices),
-            f"h3type_{name}",
-            cfg.data.label_names,
-            cfg.output_dir
-        )
 
 def run_classifier(
     datasets: DatasetDict,
@@ -523,9 +389,7 @@ def run_classifier(
             indices.extend(batch_indices)
             
             if feature_type == "bulk_expression":
-                features = get_bulk_expression(adata, batch_indices, is_test=is_test)
-                if scaler is not None:
-                    features = scaler.transform(features)
+                features = get_bulk_expression(adata, batch_indices, is_test=is_test)                    
             else:  # h3type
                 features = get_h3type_histogram(
                     batch_indices, 
@@ -533,7 +397,8 @@ def run_classifier(
                     index_maps[name],
                     n_types
                 )
-            
+                
+            features = scaler.transform(features)
             pred = clf.predict(features)
             predictions.extend(pred)
             labels.extend(batch['labels'].cpu().numpy())
