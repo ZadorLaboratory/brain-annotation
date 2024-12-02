@@ -9,12 +9,13 @@ from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from sklearn.preprocessing import StandardScaler
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
-from datasets import load_from_disk, DatasetDict
+from datasets import load_from_disk, DatasetDict, Dataset
 import torch
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
-from datasets import Dataset
 from transformers import PreTrainedModel, TrainingArguments
+import json
+import scipy
 
 # Import necessary components from train.py
 from samplers import (
@@ -128,7 +129,7 @@ def load_and_align_anndata(
         raise ValueError(
             "Mismatch found in H3 types:\n" + "\n".join(mismatch_info)
         )
-    
+       
     print("Alignment verification passed!")
     return train_adata, test_adata
 
@@ -215,16 +216,16 @@ def evaluate_method(
     # Extract metrics
     metrics = {
         "accuracy": (predictions == labels).mean(),
-        "f1_macro": report["macro avg"]["f1-score"],
-        "f1_weighted": report["weighted avg"]["f1-score"]
+        # "f1_macro": report["macro avg"]["f1-score"],
+        # "f1_weighted": report["weighted avg"]["f1-score"]
     }
     
     # Add per-class metrics
-    for label in report:
-        if label not in ["accuracy", "macro avg", "weighted avg"]:
-            metrics[f"f1_{label}"] = report[label]["f1-score"]
-            metrics[f"precision_{label}"] = report[label]["precision"]
-            metrics[f"recall_{label}"] = report[label]["recall"]
+    # for label in report:
+    #     if label not in ["accuracy", "macro avg", "weighted avg"]:
+    #         metrics[f"f1_{label}"] = report[label]["f1-score"]
+    #         metrics[f"precision_{label}"] = report[label]["precision"]
+    #         metrics[f"recall_{label}"] = report[label]["recall"]
     
     # Save predictions
     output_dict = {
@@ -320,6 +321,106 @@ def get_h3type_histogram(
 
     return histogram
 
+def create_dataset_from_anndata(adata: ad.AnnData, cfg: DictConfig) -> Dataset:
+    """
+    Create a HuggingFace Dataset directly from AnnData object.
+    """
+    # Extract features (gene expression)
+    features = np.array(adata.X.todense() if scipy.sparse.issparse(adata.X) else adata.X)
+
+    print(f"Features shape: {features.shape}")
+    
+    # Extract coordinates
+    coordinates = adata.obsm["CCF_streamlines"]
+    
+    # Extract area labels using the same logic as in tokenize_cells.py
+    with open('data/files/area_ancestor_id_map.json', 'r') as f:
+        area_ancestor_id_map = json.load(f)
+    with open('data/files/area_name_map.json', 'r') as f:
+        area_name_map = json.load(f)
+    
+    area_name_map['0'] = 'outside_brain'
+    annotation2area_int = {0.0:0}
+    for a in area_ancestor_id_map.keys():
+        higher_area_id = area_ancestor_id_map[str(int(a))][1] if len(area_ancestor_id_map[str(int(a))])>1 else a
+        annotation2area_int[float(a)] = int(higher_area_id)
+
+    unique_areas = np.unique(list(annotation2area_int.values()))
+    area_classes = np.arange(len(unique_areas))
+    id2id = {float(k):v for (k,v) in zip(unique_areas, area_classes)}
+    annotation2area_class = {k: id2id[int(v)] for k,v in annotation2area_int.items()}
+    
+    # Convert CCF annotations to area labels
+    labels = np.array([annotation2area_class[x] for x in adata.obs['CCFano']])
+    
+    # Extract H3 types
+    h3types = adata.obs['H3_type'].values
+    
+    # Create dataset
+    return Dataset.from_dict({
+        'features': features,
+        'CCF_streamlines': coordinates,
+        'labels': labels,
+        'H3_type': h3types,
+        'uuid': np.arange(len(adata))
+    })
+
+def prepare_features_from_anndata(
+    train_adata: ad.AnnData,
+    test_adata: ad.AnnData,
+    cfg: DictConfig,
+    scaler: StandardScaler
+) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Prepare features directly from AnnData objects.
+    Returns dict with keys 'train', 'validation', 'test', each containing (features, labels, indices)
+    """
+    # Create datasets from AnnData
+    train_valid_dataset = create_dataset_from_anndata(train_adata, cfg)
+    test_dataset = create_dataset_from_anndata(test_adata, cfg)
+    
+    # Split train/validation
+    train_idx, val_idx = train_test_split(
+        np.arange(len(train_valid_dataset)),
+        test_size=cfg.data.validation_split,
+        random_state=cfg.seed
+    )
+    
+    # Select splits using Dataset.select()
+    train_dataset = train_valid_dataset.select(train_idx)
+    val_dataset = train_valid_dataset.select(val_idx)
+
+    
+    # Extract features and labels as numpy arrays
+    train_features = scaler.fit_transform(np.array(train_dataset['features']))
+    val_features = scaler.transform(np.array(val_dataset['features']))
+    test_features = scaler.transform(np.array(test_dataset['features']))
+        
+    # Verify no NaN or infinite values
+    if np.any(np.isnan(train_features)) or np.any(np.isinf(train_features)):
+        raise ValueError("Training features contain NaN or infinite values")
+    
+    print(f"Train features final shape: {train_features.shape}")
+    print(f"Test features final shape: {test_features.shape}")
+    
+    return {
+        'train': (
+            train_features,
+            np.array(train_dataset['labels']),
+            train_idx
+        ),
+        'validation': (
+            val_features,
+            np.array(val_dataset['labels']),
+            val_idx
+        ),
+        'test': (
+            test_features,
+            np.array(test_dataset['labels']),
+            np.arange(len(test_dataset))
+        )
+    }
+
 def run_classifier(
     datasets: DatasetDict,
     adata: Optional[Tuple[ad.AnnData, ad.AnnData]],
@@ -329,17 +430,39 @@ def run_classifier(
 ) -> None:
     """Generic function to run different classifiers on different feature types."""
     
-    # Initialize classifier based on type
+    # Initialize classifier and scaler
     if classifier_type == "random_forest":
         clf = RandomForestClassifier(**cfg.random_forest)
     elif classifier_type == "logistic_regression":
-        clf = LogisticRegressionCV(**cfg.logistic_regression)
+        clf = LogisticRegression(**cfg.logistic_regression)
     else:
         raise ValueError(f"Unknown classifier type: {classifier_type}")
     
     scaler = StandardScaler()
 
-    # Get dataloaders using trainer infrastructure
+    # If using direct AnnData path
+    if cfg.data.group_size == 1 and cfg.get('on_adata', False):
+        train_adata, test_adata = adata
+        splits = prepare_features_from_anndata(train_adata, test_adata, cfg, scaler)
+        
+        # Train classifier
+        train_features, train_labels, _ = splits['train']
+        clf.fit(train_features, train_labels)
+        
+        # Evaluate
+        for name, (features, labels, indices) in splits.items():
+            predictions = clf.predict(features)
+            evaluate_method(
+                predictions,
+                labels,
+                indices,
+                f"{classifier_type}_{feature_type}_{name}",
+                cfg.data.label_names,
+                cfg.output_dir
+            )
+        return
+
+    # Original dataloader-based path
     dataloaders = get_dataloaders(datasets, cfg)
     
     # Prepare H3 type data if needed
@@ -373,6 +496,15 @@ def run_classifier(
     print("Train labels:", train_labels.shape)
     
     print(f"Training {classifier_type}...")
+    # Check for NaN/Inf values
+    assert not np.any(np.isnan(train_features)), "Features contain NaN values"
+    assert not np.any(np.isinf(train_features)), "Features contain infinite values"
+
+    # Verify feature array is contiguous
+    if not train_features.flags['C_CONTIGUOUS']:
+        train_features = np.ascontiguousarray(train_features)
+        
+    # Fit with verbose logging
     clf.fit(train_features, train_labels)
     
     # Evaluate on all sets
@@ -432,14 +564,18 @@ def main(cfg: DictConfig) -> None:
     print(f"Loaded datasets: {datasets}")
     
     # Load AnnData if needed for bulk expression
-    adata = None
-    if cfg.run_bulk_expression_rf or cfg.run_bulk_expression_lr:
-        adata = load_and_align_anndata(
+    adata = load_and_align_anndata(
             cfg.data.train_h5ad_files, 
             cfg.data.test_h5ad_files,  
             cfg.data.h5ad_directory,
             datasets
         )
+
+    # ensure that the lengths are the same
+    if cfg.on_adata and cfg.debug:
+        subsampled_idx_train = np.random.choice(len(adata[0]), len(datasets['train']), replace=False)
+        subsampled_idx_test = np.random.choice(len(adata[1]), len(datasets['test']), replace=False)
+        adata = (adata[0][subsampled_idx_train], adata[1][subsampled_idx_test])
     
     # Run benchmarks
     if cfg.run_bulk_expression_rf:
@@ -449,10 +585,10 @@ def main(cfg: DictConfig) -> None:
         run_classifier(datasets, adata, cfg, "logistic_regression", "bulk_expression")
     
     if cfg.run_h3type_rf:
-        run_classifier(datasets, None, cfg, "random_forest", "h3type")
+        run_classifier(datasets, adata, cfg, "random_forest", "h3type")
     
     if cfg.run_h3type_lr:
-        run_classifier(datasets, None, cfg, "logistic_regression", "h3type")
+        run_classifier(datasets, adata, cfg, "logistic_regression", "h3type")
     
     # Close wandb run
     wandb.finish()

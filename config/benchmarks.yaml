@@ -12,7 +12,7 @@ random_forest:
   min_samples_leaf: 2        # Slightly increased for better generalization
   max_features: 0.33         # About 35 features per tree (1/3 of 106)
   bootstrap: true           
-  class_weight: "balanced"   # Recommended unless you know class distribution is balanced
+  class_weight: null # "balanced"   # Recommended unless you know class distribution is balanced
   n_jobs: -1
   random_state: 42
   verbose: 0
@@ -20,7 +20,7 @@ random_forest:
 logistic_regression:
   max_iter: 1000            # Increased to ensure convergence
   multi_class: 'multinomial' # Uses softmax for multi-class
-  class_weight: 'balanced'   # Handle class imbalance
+  class_weight: null # or 'balanced'   # Handle class imbalance
   solver: 'lbfgs'           # Efficient solver for multinomial LR
   n_jobs: -1
   random_state: 42
@@ -33,6 +33,7 @@ run_bulk_expression_rf: true
 run_bulk_expression_lr: true
 run_h3type_rf: true
 run_h3type_lr: true
+on_adata: false
 
 hydra:
   run:
