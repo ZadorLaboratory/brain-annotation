@@ -17,11 +17,22 @@ random_forest:
   random_state: 42
   verbose: 0
 
+logistic_regression:
+  max_iter: 1000            # Increased to ensure convergence
+  multi_class: 'multinomial' # Uses softmax for multi-class
+  class_weight: 'balanced'   # Handle class imbalance
+  solver: 'lbfgs'           # Efficient solver for multinomial LR
+  n_jobs: -1
+  random_state: 42
+  verbose: 0
+
 debug: false
 seed: 42
 output_dir: "benchmarks"
-run_bulk_expression: true
-run_h3type: true
+run_bulk_expression_rf: true
+run_bulk_expression_lr: true
+run_h3type_rf: true
+run_h3type_lr: true
 
 hydra:
   run:

@@ -5,6 +5,7 @@ import numpy as np
 import anndata as ad
 from omegaconf import DictConfig, OmegaConf
 from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression, LogisticRegressionCV
 from sklearn.preprocessing import StandardScaler
 from collections import Counter
 from typing import Dict, List, Tuple, Optional
@@ -17,8 +18,6 @@ from transformers import PreTrainedModel, TrainingArguments
 
 # Import necessary components from train.py
 from samplers import (
-    SpatialGroupSampler,
-    SpatialGroupCollator,
     MultiformerTrainer
 )
 
@@ -422,7 +421,6 @@ def run_h3type_rf(
         
     train_features = np.vstack(train_features)
     train_labels = np.concatenate(train_labels)
-
     
     rf.fit(train_features, train_labels)
     
@@ -456,8 +454,102 @@ def run_h3type_rf(
             cfg.output_dir
         )
 
+def run_classifier(
+    datasets: DatasetDict,
+    adata: Optional[Tuple[ad.AnnData, ad.AnnData]],
+    cfg: DictConfig,
+    classifier_type: str,
+    feature_type: str
+) -> None:
+    """Generic function to run different classifiers on different feature types."""
+    
+    # Initialize classifier based on type
+    if classifier_type == "random_forest":
+        clf = RandomForestClassifier(**cfg.random_forest)
+    elif classifier_type == "logistic_regression":
+        clf = LogisticRegressionCV(**cfg.logistic_regression)
+    else:
+        raise ValueError(f"Unknown classifier type: {classifier_type}")
+    
+    scaler = StandardScaler()
+
+    # Get dataloaders using trainer infrastructure
+    dataloaders = get_dataloaders(datasets, cfg)
+    
+    # Prepare H3 type data if needed
+    if feature_type == "h3type":
+        h3_arrays, type_to_idx, index_maps = prepare_h3type_data(datasets)
+        n_types = len(type_to_idx)
+    
+    # Training
+    print(f"Collecting training features for {classifier_type} on {feature_type}...")
+    train_features = []
+    train_labels = []
+    train_indices = []
+    
+    for batch in dataloaders["train"]:
+        indices = batch['indices'].cpu().numpy()
+        train_indices.extend(indices)
+        
+        if feature_type == "bulk_expression":
+            features = get_bulk_expression(adata, indices, is_test=False)
+        else:  # h3type
+            features = get_h3type_histogram(indices, h3_arrays['train'], index_maps['train'], n_types)
+            
+        train_features.append(features)
+        train_labels.append(batch['labels'].cpu().numpy())
+    
+    train_features = np.vstack(train_features)
+    train_features = scaler.fit_transform(train_features)
+    train_labels = np.concatenate(train_labels)
+
+    print("Train features:", train_features.shape)
+    print("Train labels:", train_labels.shape)
+    
+    print(f"Training {classifier_type}...")
+    clf.fit(train_features, train_labels)
+    
+    # Evaluate on all sets
+    for name in ['train', 'validation', 'test']:
+        loader = dataloaders[name]
+        is_test = name == 'test'
+        print(f"Evaluating on {name} set...")
+        predictions = []
+        labels = []
+        indices = []
+        
+        for batch in loader:
+            batch_indices = batch['indices'].cpu().numpy()
+            indices.extend(batch_indices)
+            
+            if feature_type == "bulk_expression":
+                features = get_bulk_expression(adata, batch_indices, is_test=is_test)
+                if scaler is not None:
+                    features = scaler.transform(features)
+            else:  # h3type
+                features = get_h3type_histogram(
+                    batch_indices, 
+                    h3_arrays[name],
+                    index_maps[name],
+                    n_types
+                )
+            
+            pred = clf.predict(features)
+            predictions.extend(pred)
+            labels.extend(batch['labels'].cpu().numpy())
+
+        evaluate_method(
+            np.array(predictions),
+            np.array(labels),
+            np.array(indices),
+            f"{classifier_type}_{feature_type}_{name}",
+            cfg.data.label_names,
+            cfg.output_dir
+        )
+
 @hydra.main(version_base=None, config_path="config", config_name="benchmarks")
 def main(cfg: DictConfig) -> None:
+    print("Running benchmarks...")
     # Print config
     print(OmegaConf.to_yaml(cfg))
 
@@ -474,23 +566,31 @@ def main(cfg: DictConfig) -> None:
     datasets = prepare_datasets(dataset_dict, cfg)
     print(f"Loaded datasets: {datasets}")
     
-    # Run benchmarks
-    if cfg.run_bulk_expression:
-        print("Running bulk expression random forest...")
+    # Load AnnData if needed for bulk expression
+    adata = None
+    if cfg.run_bulk_expression_rf or cfg.run_bulk_expression_lr:
         adata = load_and_align_anndata(
             cfg.data.train_h5ad_files, 
             cfg.data.test_h5ad_files,  
             cfg.data.h5ad_directory,
             datasets
         )
-        run_bulk_expression_rf(datasets, adata, cfg)
     
-    if cfg.run_h3type:
-        print("Running H3 type random forest...")
-        run_h3type_rf(datasets, cfg)
+    # Run benchmarks
+    if cfg.run_bulk_expression_rf:
+        run_classifier(datasets, adata, cfg, "random_forest", "bulk_expression")
+    
+    if cfg.run_bulk_expression_lr:
+        run_classifier(datasets, adata, cfg, "logistic_regression", "bulk_expression")
+    
+    if cfg.run_h3type_rf:
+        run_classifier(datasets, None, cfg, "random_forest", "h3type")
+    
+    if cfg.run_h3type_lr:
+        run_classifier(datasets, None, cfg, "logistic_regression", "h3type")
     
     # Close wandb run
     wandb.finish()
 
 if __name__ == "__main__":
-    main()
+        main()
