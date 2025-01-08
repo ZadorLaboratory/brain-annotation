@@ -14,6 +14,7 @@ from transformers.trainer_utils import speed_metrics, PredictionOutput, Evaluati
 from transformers.trainer import is_datasets_available
 import time
 from torch.utils.data import DataLoader
+from sklearn.utils import check_random_state
 
 if is_datasets_available():
     import datasets
@@ -57,7 +58,7 @@ class SpatialGroupSampler(Sampler):
         self.epoch = 0
         
         self.num_samples = len(dataset)
-        self.rng = np.random.RandomState(seed)
+        self.rng = check_random_state(seed)
         
         if precomputed is not None:
             self.precomputed = precomputed
@@ -146,6 +147,9 @@ class SpatialGroupSampler(Sampler):
         
         all_indices = []
         num_complete_groups = self.num_samples // self.group_size
+
+        if self.group_size == 1:
+            return iter(range(self.num_samples))
         
         for _ in range(num_complete_groups):
             center_idx = self.rng.randint(0, len(self.dataset))
@@ -404,11 +408,12 @@ class MultiformerTrainer(Trainer):
                  coordinate_key='CCF_streamlines',
                  relative_positions=False,
                  absolute_Z=False,
+                 additional_feature_keys=[],
                  **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
             label_key=spatial_label_key,
-            feature_keys=["input_ids",],  # Add other feature keys as needed
+            feature_keys=["input_ids"] + additional_feature_keys,  # Add other feature keys as needed
             pad_token_id=0, # Adjust as needed
             add_single_cell_labels=add_single_cell_labels,
             index_key=index_key,  # Add index tracking
@@ -433,12 +438,12 @@ class MultiformerTrainer(Trainer):
         if not isinstance(self.train_dataset, collections.abc.Sized):
             return None
 
-        generator = None
-        if self.args.world_size <= 1:
-            generator = torch.Generator()
-            generator.manual_seed(
-                int(torch.empty((), dtype=torch.int64).random_().item())
-            )
+        # generator = None
+        # if self.args.world_size <= 1:
+        #     generator = torch.Generator()
+        #     generator.manual_seed(
+        #         int(torch.empty((), dtype=torch.int64).random_().item())
+        #     )
 
         # Build the sampler.
         # Use spatial sampling

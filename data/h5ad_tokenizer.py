@@ -52,6 +52,7 @@ class TranscriptomeTokenizer:
         prepend_tissue=False,
         prepend_species=None,
         gene_panel=None,
+        retain_counts=False,
     ):
         """
         Initialize tokenizer.
@@ -77,6 +78,8 @@ class TranscriptomeTokenizer:
             If not None, adds "mouse" or "human" to the beginning of the cell type, and tokenizes it.
         gene_panel : list
             List of genes to include in the tokenization. If None, all genes are used.
+        retain_counts : bool
+            Whether to retain the counts in the tokenized dataset. Will be stored as a custom attribute "counts".
         """
         # dictionary of custom attributes {output dataset column name: input .h5ad column name}
         self.custom_attr_name_dict = custom_attr_name_dict
@@ -87,6 +90,7 @@ class TranscriptomeTokenizer:
         self.prepend_species = prepend_species
         self.prepend_tissue = prepend_tissue
         self.prepend_cls = prepend_cls
+        self.retain_counts = retain_counts
 
         self.gene_panel = gene_panel
         # load dictionary of gene normalization factors
@@ -284,6 +288,10 @@ class TranscriptomeTokenizer:
             else:
                 print(f"WARNING: Custom attribute {raw_key} not found in .h5ad file. Setting to 'Unk'")
                 file_cell_metadata[tokenization_key] = ['Unk' for i in range(len(filter_pass_loc))]
+
+        # Add counts to metadata
+        if self.retain_counts:
+            file_cell_metadata["raw_counts"] = data.toarray().tolist()
 
         return tokenized_cells, file_cell_metadata
 

@@ -16,6 +16,8 @@ from sklearn.model_selection import train_test_split
 from transformers import PreTrainedModel, TrainingArguments
 import json
 import scipy
+from sklearn.utils import check_random_state
+from sklearn.preprocessing import OneHotEncoder
 
 # Import necessary components from train.py
 from samplers import (
@@ -59,7 +61,8 @@ def get_dataloaders(datasets: DatasetDict, cfg: DictConfig) -> Dict[str, DataLoa
         eval_dataset=datasets["validation"],
         spatial_group_size=cfg.data.group_size,
         spatial_label_key="labels",
-        coordinate_key='CCF_streamlines'
+        coordinate_key='CCF_streamlines',
+        additional_feature_keys=['raw_counts'],
     )
     
     # Get dataloaders
@@ -115,10 +118,10 @@ def load_and_align_anndata(
     # Verify alignment with dataset
     print("Verifying alignment with dataset...")
     
-    # Check first 100 cells in train dataset
+    # Check first 10000 cells in train dataset
     test_dataset = dataset['test']
-    dataset_h3types = np.array(test_dataset[:100]['H3_type'])
-    adata_h3types = test_adata.obs['H3_type'].values[:100]
+    dataset_h3types = np.array(test_dataset[:10000]['H3_type'])
+    adata_h3types = test_adata.obs['H3_type'].values[:10000]
     
     if not np.array_equal(dataset_h3types, adata_h3types):
         mismatches = np.where(dataset_h3types != adata_h3types)[0]
@@ -253,9 +256,8 @@ def get_bulk_expression(adata: Tuple[ad.AnnData, ad.AnnData], indices: np.ndarra
     
     features = []
     for batch_indices in indices:
-        mask = np.zeros(len(current_adata), dtype=bool)
-        mask[batch_indices] = True
-        features.append(np.array(current_adata[mask].X.mean(axis=0)))
+        features.append(np.array(current_adata[batch_indices].X.mean(axis=0)))
+
     return np.vstack(features)
 
 def prepare_h3type_data(dataset: DatasetDict) -> Tuple[Dict[str, np.ndarray], Dict[str, int], Dict[str, Dict[int, int]]]:
@@ -355,21 +357,32 @@ def create_dataset_from_anndata(adata: ad.AnnData, cfg: DictConfig) -> Dataset:
     
     # Extract H3 types
     h3types = adata.obs['H3_type'].values
+
+    # # Filter dataset to only include cells for which the CCF_streamlines is not nans
+    # same as tokenized_dataset = tokenized_dataset.filter(lambda x: not np.isnan(np.sum(x['CCF_streamlines'])))
+    # Filter out indices where CCF_streamlines contains NaN values
+    valid_mask = ~np.isnan(coordinates).any(axis=1)
+    features = features[valid_mask]
+    coordinates = coordinates[valid_mask]
+    labels = labels[valid_mask]
+    h3types = h3types[valid_mask]
+    indices = np.arange(len(adata))[valid_mask]
     
     # Create dataset
     return Dataset.from_dict({
-        'features': features,
+        'expression': features,
         'CCF_streamlines': coordinates,
         'labels': labels,
         'H3_type': h3types,
-        'uuid': np.arange(len(adata))
+        'uuid': indices
     })
 
 def prepare_features_from_anndata(
     train_adata: ad.AnnData,
     test_adata: ad.AnnData,
     cfg: DictConfig,
-    scaler: StandardScaler
+    scaler: StandardScaler,
+    feature_type: str
 ) -> Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """
     Prepare features directly from AnnData objects.
@@ -379,22 +392,49 @@ def prepare_features_from_anndata(
     train_valid_dataset = create_dataset_from_anndata(train_adata, cfg)
     test_dataset = create_dataset_from_anndata(test_adata, cfg)
     
+    rng = check_random_state(cfg.seed)
+
     # Split train/validation
     train_idx, val_idx = train_test_split(
         np.arange(len(train_valid_dataset)),
         test_size=cfg.data.validation_split,
-        random_state=cfg.seed
+        random_state=rng
     )
     
     # Select splits using Dataset.select()
     train_dataset = train_valid_dataset.select(train_idx)
     val_dataset = train_valid_dataset.select(val_idx)
 
-    
+    if feature_type == "h3type":
+        # One-hot encode H3 types
+        # Collect all unique H3 types from all splits
+        all_h3_types = np.concatenate([
+            train_dataset['H3_type'],
+            val_dataset['H3_type'],
+            test_dataset['H3_type']
+        ])
+        encoder = OneHotEncoder(sparse_output=False) 
+        # Fit on all types
+        encoder.fit(all_h3_types.reshape(-1, 1))
+        # Transform each split
+        train_features = encoder.transform(np.array(train_dataset['H3_type']).reshape(-1, 1))
+        val_features = encoder.transform(np.array(val_dataset['H3_type']).reshape(-1, 1))
+        test_features = encoder.transform(np.array(test_dataset['H3_type']).reshape(-1, 1))
+    else:
+        # Extract and scale continuous features
+        train_features = np.array(train_dataset['expression'])
+        val_features = np.array(val_dataset['expression'])
+        test_features = np.array(test_dataset['expression'])
+        
+        # Only apply scaling for non-categorical features
+        train_features = scaler.fit_transform(train_features)
+        val_features = scaler.transform(val_features)
+        test_features = scaler.transform(test_features)
+            
     # Extract features and labels as numpy arrays
-    train_features = scaler.fit_transform(np.array(train_dataset['features']))
-    val_features = scaler.transform(np.array(val_dataset['features']))
-    test_features = scaler.transform(np.array(test_dataset['features']))
+    train_features = scaler.fit_transform(train_features)
+    val_features = scaler.transform(val_features)
+    test_features = scaler.transform(test_features)
         
     # Verify no NaN or infinite values
     if np.any(np.isnan(train_features)) or np.any(np.isinf(train_features)):
@@ -403,7 +443,7 @@ def prepare_features_from_anndata(
     print(f"Train features final shape: {train_features.shape}")
     print(f"Test features final shape: {test_features.shape}")
     
-    return {
+    output =  {
         'train': (
             train_features,
             np.array(train_dataset['labels']),
@@ -420,6 +460,35 @@ def prepare_features_from_anndata(
             np.arange(len(test_dataset))
         )
     }
+
+    if cfg.get('resample_adata', False):
+        # Resample the data
+        print("Resampling the data")
+        for name, (features, labels, indices) in output.items():
+            resampled_indices = np.random.choice(range(len(indices)), len(indices), replace=True)
+            output[name] = (features[resampled_indices], labels[resampled_indices], indices[resampled_indices])
+
+    return output        
+
+def verify_indices(features, labels, indices, name):
+    print(f"\n=== Verification for {name} ===")
+    print(f"Features shape: {features.shape}")
+    print(f"Unique indices: {len(np.unique(indices))}")
+    print(f"First 5 indices: {indices[:5]}")
+    print(f"Labels distribution: {np.unique(labels, return_counts=True)}")
+    # Add checksum for features
+    print(f"Features checksum: {np.sum(features)}")
+
+def debug_feature_extraction(adata, indices, path_name):
+    features = adata[indices].X
+    if scipy.sparse.issparse(features):
+        features = features.todense()
+    print(f"\n=== Feature extraction {path_name} ===")
+    print(f"Shape: {features.shape}")
+    print(f"Mean: {np.mean(features)}")
+    print(f"Std: {np.std(features)}")
+    print(f"Number of zeros: {np.sum(features == 0)}")
+    return features
 
 def run_classifier(
     datasets: DatasetDict,
@@ -443,12 +512,14 @@ def run_classifier(
     # If using direct AnnData path
     if cfg.data.group_size == 1 and cfg.get('on_adata', False):
         train_adata, test_adata = adata
-        splits = prepare_features_from_anndata(train_adata, test_adata, cfg, scaler)
+        splits = prepare_features_from_anndata(train_adata, test_adata, cfg, scaler, feature_type)
         
         # Train classifier
-        train_features, train_labels, _ = splits['train']
+        train_features, train_labels, train_indices = splits['train']
         clf.fit(train_features, train_labels)
-        
+        np.save(f"{cfg.output_dir}/train_{feature_type}_adata_true.npy", train_features)
+        np.save(f"{cfg.output_dir}/train_{feature_type}_labels_adata_true.npy", train_labels)
+
         # Evaluate
         for name, (features, labels, indices) in splits.items():
             predictions = clf.predict(features)
@@ -477,11 +548,14 @@ def run_classifier(
     train_indices = []
     
     for batch in dataloaders["train"]:
-        indices = batch['indices'].cpu().numpy()
+        indices = batch['indices'].cpu().numpy() # these are uuid = indices in the original dataset['train'] before splitting
         train_indices.extend(indices)
         
         if feature_type == "bulk_expression":
-            features = get_bulk_expression(adata, indices, is_test=False)
+            if cfg.load_counts_from_hf:
+                features = batch['raw_counts'].cpu().numpy().squeeze()
+            else:
+                features = get_bulk_expression(adata, indices, is_test=False)
         else:  # h3type
             features = get_h3type_histogram(indices, h3_arrays['train'], index_maps['train'], n_types)
             
@@ -494,6 +568,8 @@ def run_classifier(
 
     print("Train features:", train_features.shape)
     print("Train labels:", train_labels.shape)
+    np.save(f"{cfg.output_dir}/train_{feature_type}_adata_false.npy", train_features)
+    np.save(f"{cfg.output_dir}/train_{feature_type}_labels_adata_false.npy", train_labels)
     
     print(f"Training {classifier_type}...")
     # Check for NaN/Inf values
@@ -503,7 +579,6 @@ def run_classifier(
     # Verify feature array is contiguous
     if not train_features.flags['C_CONTIGUOUS']:
         train_features = np.ascontiguousarray(train_features)
-        
     # Fit with verbose logging
     clf.fit(train_features, train_labels)
     
@@ -521,7 +596,10 @@ def run_classifier(
             indices.extend(batch_indices)
             
             if feature_type == "bulk_expression":
-                features = get_bulk_expression(adata, batch_indices, is_test=is_test)                    
+                if cfg.load_counts_from_hf: 
+                    features = batch['raw_counts'].cpu().numpy().squeeze()
+                else:
+                    features = get_bulk_expression(adata, batch_indices, is_test=is_test)                    
             else:  # h3type
                 features = get_h3type_histogram(
                     batch_indices, 
@@ -595,3 +673,73 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
         main()
+
+## Results of on_adata=True
+# wandb: Run summary:
+# wandb:       logistic_regression_bulk_expression_test_accuracy 0.1854
+# wandb:      logistic_regression_bulk_expression_train_accuracy 0.40067
+# wandb: logistic_regression_bulk_expression_validation_accuracy 0.191
+# wandb:                logistic_regression_h3type_test_accuracy 0.1699
+# wandb:               logistic_regression_h3type_train_accuracy 0.21056
+# wandb:          logistic_regression_h3type_validation_accuracy 0.175
+# wandb:             random_forest_bulk_expression_test_accuracy 0.2065
+# wandb:            random_forest_bulk_expression_train_accuracy 0.92122
+# wandb:       random_forest_bulk_expression_validation_accuracy 0.2
+# wandb:                      random_forest_h3type_test_accuracy 0.1454
+# wandb:                     random_forest_h3type_train_accuracy 0.15933
+# wandb:                random_forest_h3type_validation_accuracy 0.139
+
+## Results of on_adata=False
+# wandb:       logistic_regression_bulk_expression_test_accuracy 0.1657
+# wandb:      logistic_regression_bulk_expression_train_accuracy 0.1463
+# wandb: logistic_regression_bulk_expression_validation_accuracy 0.0914
+# wandb:                logistic_regression_h3type_test_accuracy 0.1863
+# wandb:               logistic_regression_h3type_train_accuracy 0.1971
+# wandb:          logistic_regression_h3type_validation_accuracy 0.1778
+# wandb:             random_forest_bulk_expression_test_accuracy 0.1633
+# wandb:            random_forest_bulk_expression_train_accuracy 0.5095
+# wandb:       random_forest_bulk_expression_validation_accuracy 0.1062
+# wandb:                      random_forest_h3type_test_accuracy 0.0975
+# wandb:                     random_forest_h3type_train_accuracy 0.1615
+# wandb:                random_forest_h3type_validation_accuracy 0.158
+
+
+# ### On all data
+# true
+# wandb:       logistic_regression_bulk_expression_test_accuracy 0.26067
+# wandb:      logistic_regression_bulk_expression_train_accuracy 0.26087
+# wandb: logistic_regression_bulk_expression_validation_accuracy 0.26088
+# wandb:                logistic_regression_h3type_test_accuracy 0.18645
+# wandb:               logistic_regression_h3type_train_accuracy 0.18792
+# wandb:          logistic_regression_h3type_validation_accuracy 0.1863
+# wandb:             random_forest_bulk_expression_test_accuracy 0.25975
+# wandb:            random_forest_bulk_expression_train_accuracy 0.42724
+# wandb:       random_forest_bulk_expression_validation_accuracy 0.26243
+# wandb:                      random_forest_h3type_test_accuracy 0.14709
+# wandb:                     random_forest_h3type_train_accuracy 0.14894
+# wandb:                random_forest_h3type_validation_accuracy 0.14985
+
+# false
+# wandb: Run summary:
+# wandb:       logistic_regression_bulk_expression_test_accuracy 0.09024
+# wandb:      logistic_regression_bulk_expression_train_accuracy 0.12697
+# wandb: logistic_regression_bulk_expression_validation_accuracy 0.1246
+# wandb:                logistic_regression_h3type_test_accuracy 0.17947
+# wandb:               logistic_regression_h3type_train_accuracy 0.19149
+# wandb:          logistic_regression_h3type_validation_accuracy 0.19145
+# wandb:             random_forest_bulk_expression_test_accuracy 0.08254
+# wandb:            random_forest_bulk_expression_train_accuracy 0.22865
+# wandb:       random_forest_bulk_expression_validation_accuracy 0.11936
+# wandb:                      random_forest_h3type_test_accuracy 0.12144
+# wandb:                     random_forest_h3type_train_accuracy 0.1483
+# wandb:                random_forest_h3type_validation_accuracy 0.14861
+# wandb: 
+
+# These should be the same. The only difference is that the first one uses the adata directly, while the second one uses the dataloader.
+# It is clearly just a problem with the bulk expression. Suggests an indexing or feature extraction problem.
+# Debugging strategies:
+# - Build a fake small dataset (would require re-tokenizing the data)
+# 
+# Hypotheses:
+# - selecting the "Wrong" datapoints?
+# - or messing up the features?
