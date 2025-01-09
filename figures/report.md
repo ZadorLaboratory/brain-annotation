@@ -88,3 +88,30 @@ Couple interesting things to note here.
  - Even though validation cells are uniformly distributed, the sampling procedure (choose a centroid point, select closest 256 cells, terminate at `len(dataset)//group_size` centroids) never evaluates many validation cells. Others are sampled multiple times.
  - The model is NOT able to learn boundaries that cut through groups. Makes sense; it's encouraged by our dual loss function...
  - Begs the question: what if we just train on the single-cell labels?
+
+## Comparing with benchmarks.
+
+I am considering two classes of benchmarks: 
+  - Pseudo-bulk expression
+  - H3 type composition
+
+In both of these, I examine Random Forests and Logistic Regression. LR appears to work better.
+
+Like before, I can examine the accuracy of these models as a function of the number of cells in the group. 
+
+<img src="group_predictions_with_benchmarks_log.png" alt="Spatial coverage" width="500">
+
+Note this required tackling a very annoying bug for the bulk expression version.
+
+## Changing the sampling strategy
+
+As can be seen above, the sampling strategy of 1) selecting a random cell, and 2) selecting nearby cells, is not ideal. Large areas are left uncovered. This might be fine in the limit of long training, but it's not ideal when examining the predictions of the model, which effectively see a single epoch.
+
+An alternative approach is to sample groups on a hexagonal grid (plus a small amount of jitter). This ensures that the entire area is covered, and that the model sees a more uniform distribution of cells.
+
+<img src="hex_grid_sampling.png" alt="Spatial coverage" width="300">
+
+Note as well that I've reflected cells from the 'right' hemisphere to the 'left' hemisphere. Xiaoyin informed me that all cells were collected from the left hemisphere, and the cells in the right hemisphere were some error of processing or registration.
+
+#### Results
+
