@@ -11,7 +11,7 @@ import json
 
 parent_directory = os.environ.get('ROOT_DATA_PATH') # /home/benjami/mnt/zador_data_norepl/Ari/transcriptomics
 
-parser = argparse.ArgumentParser(description='Tokenize loom files')
+parser = argparse.ArgumentParser(description='Tokenize anndata files')
 parser.add_argument('--gene_median_file', type=str, default="files/median_dict.pkl",
                     help='path to gene median file')
 parser.add_argument('--token_dictionary_file', type=str, default="files/barseq_token_dict_cls.pkl",
@@ -24,7 +24,7 @@ parser.add_argument('--gene-panel-path', type=str, default="files/barseq_gene_pa
                     help='Path to a gene panel file. If none, all genes are used. The gene panel file should be a pickle of a list. The gene names should be Ensemble gene IDs.')
 parser.add_argument('--nproc', type=int, default=24, help='number of processes')
 parser.add_argument('--output_prefix', type=str, default="train_test_barseq", help='output prefix for the tokenized files')
-
+parser.add_argument('--raw-counts', action='store_true', help='Add raw counts to the tokenized dataset')    
 args = parser.parse_args()
 print("args:", args)
 t0 = time.time()
@@ -74,7 +74,8 @@ for filename in train_filenames:
         gene_median_file=args.gene_median_file,
         token_dictionary_file=args.token_dictionary_file,
         gene_panel = gene_panel,
-        nproc=args.nproc)
+        nproc=args.nproc,
+        retain_counts=args.raw_counts)
 
     tokenized_dataset,_ = tk.tokenize_data(h5ad_data_path, args.output_directory, filename, save=False)
 
@@ -99,8 +100,8 @@ for filename in test_filenames:
         gene_median_file=args.gene_median_file,
         token_dictionary_file=args.token_dictionary_file,
         gene_panel = gene_panel,
-        nproc=args.nproc)
-
+        nproc=args.nproc,
+        retain_counts=args.raw_counts)
     tokenized_dataset,_ = tk.tokenize_data(h5ad_data_path, args.output_directory, filename, save=False)
     tokenized_dataset = tokenized_dataset.filter(lambda x: not np.isnan(np.sum(x['CCF_streamlines'])))
     tokenized_dataset = tokenized_dataset.map(lambda x: {'area_label': annoation2area_class[x['CCFano']]})
