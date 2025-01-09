@@ -162,6 +162,12 @@ def visualize_hex_grid(
     plt.close()
     
     print(f"Visualization saved to {save_path}")
+from dataclasses import dataclass
+import numpy as np
+from scipy.spatial import cKDTree
+from typing import Dict, List, Set, Tuple, Optional, Iterator
+import math
+import torch
 
 @dataclass
 class HexGridData:
@@ -246,7 +252,10 @@ class HexagonalSpatialGroupSampler(Sampler):
         Each hexagon should contain roughly 1.5-2x group_size points on average
         for good coverage and flexibility.
         """
-        area = self.precomputed.x_range * self.precomputed.y_range
+        x_range = np.ptp(coordinates[:, 0])
+        y_range = np.ptp(coordinates[:, 1])
+        area = x_range * y_range
+        
         target_hex_count = len(coordinates) / (self.group_size * 1.5)
         hex_area = area / target_hex_count
         # For a hexagon, area = 2√3 * radius²
@@ -336,32 +345,32 @@ class HexagonalSpatialGroupSampler(Sampler):
         )
 
     def _get_spatial_group(self, center_idx: int) -> np.ndarray:
-            """Get indices for one spatial group using hex center with random jitter."""
-            base_center = self.precomputed.hex_grid.hex_centers[center_idx]
-            hex_size = self.precomputed.hex_grid.hex_size
+        """Get indices for one spatial group using hex center with random jitter."""
+        base_center = self.precomputed.hex_grid.hex_centers[center_idx]
+        hex_size = self.precomputed.hex_grid.hex_size
+        
+        # Add random jitter within hex (about 40% of hex size)
+        jitter = self.rng.normal(0, 0.4 * hex_size, size=2)
+        center = base_center + jitter
+        radius = self.precomputed.initial_radius
+        
+        while True:
+            neighbor_indices = self.precomputed.tree.query_ball_point(
+                center, radius, workers=-1
+            )
             
-            # Add random jitter within hex (about 40% of hex size)
-            jitter = self.rng.normal(0, 0.4 * hex_size, size=2)
-            center = base_center + jitter
-            radius = self.precomputed.initial_radius
+            if len(neighbor_indices) >= self.group_size:
+                neighbor_coords = self.precomputed.coordinates[neighbor_indices]
+                distances = np.sum((neighbor_coords - center) ** 2, axis=1)
+                
+                k = min(self.group_size, len(distances))
+                closest_local_indices = np.argpartition(distances, k-1)[:k]
+                selected_indices = np.array(neighbor_indices)[closest_local_indices]
+                
+                if len(selected_indices) >= self.group_size:
+                    return selected_indices[:self.group_size]
             
-            while True:
-                neighbor_indices = self.precomputed.tree.query_ball_point(
-                    center, radius, workers=-1
-                )
-                
-                if len(neighbor_indices) >= self.group_size:
-                    neighbor_coords = self.precomputed.coordinates[neighbor_indices]
-                    distances = np.sum((neighbor_coords - center) ** 2, axis=1)
-                    
-                    k = min(self.group_size, len(distances))
-                    closest_local_indices = np.argpartition(distances, k-1)[:k]
-                    selected_indices = np.array(neighbor_indices)[closest_local_indices]
-                    
-                    if len(selected_indices) >= self.group_size:
-                        return selected_indices[:self.group_size]
-                
-                radius *= 1.5
+            radius *= 1.5
 
     def visualize(
         self,
