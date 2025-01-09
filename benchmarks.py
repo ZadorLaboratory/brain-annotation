@@ -1,3 +1,80 @@
+"""
+Benchmarking Configuration
+=========================
+
+This configuration file controls the benchmarking pipeline for brain cell type classification models.
+It defines parameters for Random Forest and Logistic Regression classifiers, along with data handling
+and experiment tracking settings.
+
+Dependencies
+-----------
+- hydra-core
+- wandb (Weights & Biases)
+- scikit-learn
+- numpy
+- anndata (when using AnnData features)
+
+Configuration Sections
+--------------------
+random_forest:
+    Parameters for sklearn RandomForestClassifier
+    - n_estimators: Number of trees (default: 200)
+    - max_depth: Maximum tree depth (default: 15)
+    - min_samples_split: Minimum samples for split (default: 5)
+    - min_samples_leaf: Minimum samples per leaf (default: 2)
+    - max_features: Features per tree (default: 0.33)
+    - bootstrap: Bootstrap samples (default: true)
+    - class_weight: Class weighting strategy (default: null)
+
+logistic_regression:
+    Parameters for sklearn LogisticRegression
+    - max_iter: Maximum iterations (default: 1000)
+    - multi_class: Classification strategy (default: 'multinomial')
+    - solver: Optimization algorithm (default: 'lbfgs')
+
+Debug Options
+------------
+debug: false                 # Enable debug mode with reduced dataset
+debug_args:
+    on_adata: false         # Use AnnData features
+    resample_adata: true    # Resample AnnData to match dataset size
+
+Experiment Types
+--------------
+run_bulk_expression_rf: false    # Run Random Forest on bulk expression
+run_bulk_expression_lr: true     # Run Logistic Regression on bulk expression
+run_h3type_rf: false            # Run Random Forest on H3 types
+run_h3type_lr: false            # Run Logistic Regression on H3 types
+
+Usage Examples
+------------
+# Run default benchmarks
+python benchmarks.py
+
+# Enable debug mode
+python benchmarks.py debug=true
+
+# Run specific experiment
+python benchmarks.py run_bulk_expression_rf=true
+
+# Override Random Forest parameters
+python benchmarks.py random_forest.n_estimators=300 random_forest.max_depth=20
+
+Output
+------
+Results are saved to ${output_dir} (default: 'benchmarks/') including:
+- Model performance metrics
+- Feature importance plots
+- Confusion matrices
+- Weights & Biases logs (if enabled)
+
+Notes
+-----
+- Set debug=true for quick iteration with reduced dataset
+- Enable wandb tracking by configuring wandb/default.yaml
+- Use debug_args.on_adata=true when working with AnnData features
+"""
+
 import os
 import hydra
 import wandb
@@ -206,30 +283,12 @@ def evaluate_method(
     output_dir: str
 ) -> Dict:
     """Evaluate predictions and save results."""
-    from sklearn.metrics import classification_report
-    
-    # Generate detailed classification report
-    report = classification_report(
-        labels,
-        predictions,
-        output_dict=True,
-        zero_division=0
-    )
     
     # Extract metrics
     metrics = {
         "accuracy": (predictions == labels).mean(),
-        # "f1_macro": report["macro avg"]["f1-score"],
-        # "f1_weighted": report["weighted avg"]["f1-score"]
     }
-    
-    # Add per-class metrics
-    # for label in report:
-    #     if label not in ["accuracy", "macro avg", "weighted avg"]:
-    #         metrics[f"f1_{label}"] = report[label]["f1-score"]
-    #         metrics[f"precision_{label}"] = report[label]["precision"]
-    #         metrics[f"recall_{label}"] = report[label]["recall"]
-    
+
     # Save predictions
     output_dict = {
         'predictions': predictions,
@@ -243,22 +302,6 @@ def evaluate_method(
     wandb.log({f"{prefix}_{k}": v for k, v in metrics.items()})
     
     return metrics
-
-def get_bulk_expression(adata: Tuple[ad.AnnData, ad.AnnData], indices: np.ndarray, is_test: bool) -> np.ndarray:
-    """Get mean expression for a group of cells."""
-    train_adata, test_adata = adata
-    current_adata = test_adata if is_test else train_adata
-    
-    # Ensure indices is 2D even when group_size=1
-    indices = np.asarray(indices)
-    if indices.ndim == 1:
-        indices = indices.reshape(1, -1)
-    
-    features = []
-    for batch_indices in indices:
-        features.append(np.array(current_adata[batch_indices].X.mean(axis=0)))
-
-    return np.vstack(features)
 
 def prepare_h3type_data(dataset: DatasetDict) -> Tuple[Dict[str, np.ndarray], Dict[str, int], Dict[str, Dict[int, int]]]:
     """
@@ -461,34 +504,14 @@ def prepare_features_from_anndata(
         )
     }
 
-    if cfg.get('resample_adata', False):
+    if cfg.debug_args.resample_adata:
         # Resample the data
-        print("Resampling the data")
+        print("Resampling the adata")
         for name, (features, labels, indices) in output.items():
             resampled_indices = np.random.choice(range(len(indices)), len(indices), replace=True)
             output[name] = (features[resampled_indices], labels[resampled_indices], indices[resampled_indices])
 
     return output        
-
-def verify_indices(features, labels, indices, name):
-    print(f"\n=== Verification for {name} ===")
-    print(f"Features shape: {features.shape}")
-    print(f"Unique indices: {len(np.unique(indices))}")
-    print(f"First 5 indices: {indices[:5]}")
-    print(f"Labels distribution: {np.unique(labels, return_counts=True)}")
-    # Add checksum for features
-    print(f"Features checksum: {np.sum(features)}")
-
-def debug_feature_extraction(adata, indices, path_name):
-    features = adata[indices].X
-    if scipy.sparse.issparse(features):
-        features = features.todense()
-    print(f"\n=== Feature extraction {path_name} ===")
-    print(f"Shape: {features.shape}")
-    print(f"Mean: {np.mean(features)}")
-    print(f"Std: {np.std(features)}")
-    print(f"Number of zeros: {np.sum(features == 0)}")
-    return features
 
 def run_classifier(
     datasets: DatasetDict,
@@ -510,15 +533,13 @@ def run_classifier(
     scaler = StandardScaler()
 
     # If using direct AnnData path
-    if cfg.data.group_size == 1 and cfg.get('on_adata', False):
+    if cfg.data.group_size == 1 and cfg.debug_args.on_adata:
         train_adata, test_adata = adata
         splits = prepare_features_from_anndata(train_adata, test_adata, cfg, scaler, feature_type)
         
         # Train classifier
         train_features, train_labels, train_indices = splits['train']
         clf.fit(train_features, train_labels)
-        np.save(f"{cfg.output_dir}/train_{feature_type}_adata_true.npy", train_features)
-        np.save(f"{cfg.output_dir}/train_{feature_type}_labels_adata_true.npy", train_labels)
 
         # Evaluate
         for name, (features, labels, indices) in splits.items():
@@ -552,10 +573,7 @@ def run_classifier(
         train_indices.extend(indices)
         
         if feature_type == "bulk_expression":
-            if cfg.load_counts_from_hf:
-                features = batch['raw_counts'].cpu().numpy().squeeze()
-            else:
-                features = get_bulk_expression(adata, indices, is_test=False)
+            features = batch['raw_counts'].cpu().numpy().squeeze()
         else:  # h3type
             features = get_h3type_histogram(indices, h3_arrays['train'], index_maps['train'], n_types)
             
@@ -568,8 +586,6 @@ def run_classifier(
 
     print("Train features:", train_features.shape)
     print("Train labels:", train_labels.shape)
-    np.save(f"{cfg.output_dir}/train_{feature_type}_adata_false.npy", train_features)
-    np.save(f"{cfg.output_dir}/train_{feature_type}_labels_adata_false.npy", train_labels)
     
     print(f"Training {classifier_type}...")
     # Check for NaN/Inf values
@@ -585,7 +601,6 @@ def run_classifier(
     # Evaluate on all sets
     for name in ['train', 'validation', 'test']:
         loader = dataloaders[name]
-        is_test = name == 'test'
         print(f"Evaluating on {name} set...")
         predictions = []
         labels = []
@@ -596,10 +611,7 @@ def run_classifier(
             indices.extend(batch_indices)
             
             if feature_type == "bulk_expression":
-                if cfg.load_counts_from_hf: 
-                    features = batch['raw_counts'].cpu().numpy().squeeze()
-                else:
-                    features = get_bulk_expression(adata, batch_indices, is_test=is_test)                    
+                features = batch['raw_counts'].cpu().numpy().squeeze()   
             else:  # h3type
                 features = get_h3type_histogram(
                     batch_indices, 
@@ -641,16 +653,19 @@ def main(cfg: DictConfig) -> None:
     datasets = prepare_datasets(dataset_dict, cfg)
     print(f"Loaded datasets: {datasets}")
     
-    # Load AnnData if needed for bulk expression
-    adata = load_and_align_anndata(
+    # Load AnnData if needed
+    if cfg.debug_args.on_adata:
+        adata = load_and_align_anndata(
             cfg.data.train_h5ad_files, 
             cfg.data.test_h5ad_files,  
             cfg.data.h5ad_directory,
             datasets
-        )
+            )
+    else:
+        adata = None
 
     # ensure that the lengths are the same
-    if cfg.on_adata and cfg.debug:
+    if cfg.debug_args.on_adata and cfg.debug:
         subsampled_idx_train = np.random.choice(len(adata[0]), len(datasets['train']), replace=False)
         subsampled_idx_test = np.random.choice(len(adata[1]), len(datasets['test']), replace=False)
         adata = (adata[0][subsampled_idx_train], adata[1][subsampled_idx_test])

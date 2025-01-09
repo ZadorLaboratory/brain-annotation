@@ -27,15 +27,16 @@ logistic_regression:
   verbose: 0
 
 debug: false
+debug_args:
+  on_adata: false
+  resample_adata: true
+
 seed: 42
 output_dir: "benchmarks"
 run_bulk_expression_rf: false
 run_bulk_expression_lr: true
 run_h3type_rf: false
 run_h3type_lr: false
-on_adata: false
-resample_adata: true
-load_counts_from_hf: true
 
 hydra:
   run:
