@@ -140,6 +140,7 @@ def get_dataloaders(datasets: DatasetDict, cfg: DictConfig) -> Dict[str, DataLoa
         spatial_label_key="labels",
         coordinate_key='CCF_streamlines',
         additional_feature_keys=['raw_counts'],
+        sampling_strategy=cfg.data.sampling_strategy,
     )
     
     # Get dataloaders
@@ -573,9 +574,11 @@ def run_classifier(
         train_indices.extend(indices)
         
         if feature_type == "bulk_expression":
-            features = batch['raw_counts'].cpu().numpy().squeeze()
+            features = batch['raw_counts'].mean(1).cpu().numpy()   
         else:  # h3type
             features = get_h3type_histogram(indices, h3_arrays['train'], index_maps['train'], n_types)
+
+        # get 
             
         train_features.append(features)
         train_labels.append(batch['labels'].cpu().numpy())
@@ -611,7 +614,7 @@ def run_classifier(
             indices.extend(batch_indices)
             
             if feature_type == "bulk_expression":
-                features = batch['raw_counts'].cpu().numpy().squeeze()   
+                features = batch['raw_counts'].mean(1).cpu().numpy()   
             else:  # h3type
                 features = get_h3type_histogram(
                     batch_indices, 

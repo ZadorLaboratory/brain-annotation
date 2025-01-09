@@ -19,15 +19,423 @@ from sklearn.utils import check_random_state
 if is_datasets_available():
     import datasets
 
+import matplotlib.pyplot as plt
+from matplotlib.patches import RegularPolygon
+import matplotlib.colors as mcolors
+import os
+
+def visualize_hex_grid(
+    sampler,
+    save_path: str,
+    num_groups: Optional[int] = None,
+    figsize: Tuple[int, int] = (12, 12)
+    ) -> None:
+    """
+    Visualize the hex grid and sampling pattern.
+    
+    Args:
+        sampler: The HexagonalSpatialGroupSampler instance
+        save_path: Path to save the visualization
+        num_groups: Number of groups to visualize (default: min(10, len(valid_centers)))
+        figsize: Figure size in inches
+    """
+    plt.figure(figsize=figsize)
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    fig.suptitle('Hex Grid Sampling Visualization', fontsize=16)
+    
+    # Plot 1: Hex Grid Structure
+    ax1.set_title('Hex Grid Structure')
+    
+    # Plot all points
+    ax1.scatter(
+        sampler.precomputed.coordinates[:, 0],
+        sampler.precomputed.coordinates[:, 1],
+        c='lightgray',
+        s=1,
+        alpha=0.5,
+        label='All Points'
+    )
+    
+    # Plot hex centers and boundaries
+    hex_centers = sampler.precomputed.hex_grid.hex_centers
+    valid_indices = sampler.precomputed.hex_grid.valid_hex_indices
+    hex_size = sampler.precomputed.hex_grid.hex_size
+    points_per_hex = sampler.precomputed.hex_grid.points_per_hex
+    
+    # Create colormap for point density
+    norm = mcolors.Normalize(
+        vmin=0,
+        vmax=max(points_per_hex[valid_indices])
+    )
+    
+    # Plot hexagons
+    for idx in range(len(hex_centers)):
+        center = hex_centers[idx]
+        color = 'red' if idx in valid_indices else 'lightgray'
+        alpha = 0.7 if idx in valid_indices else 0.2
+        
+        # Create hexagon
+        hex_patch = RegularPolygon(
+            (center[0], center[1]),
+            numVertices=6,
+            radius=hex_size,
+            orientation=0,
+            facecolor=color,
+            alpha=alpha,
+            edgecolor='black',
+            linewidth=0.5
+        )
+        ax1.add_patch(hex_patch)
+    
+    # Plot 2: Sampling Pattern
+    ax2.set_title('Sampling Pattern')
+    
+    # Plot all points
+    ax2.scatter(
+        sampler.precomputed.coordinates[:, 0],
+        sampler.precomputed.coordinates[:, 1],
+        c='lightgray',
+        s=1,
+        alpha=0.5,
+        label='All Points'
+    )
+    
+    # Get sampling pattern
+    if num_groups is None:
+        num_groups = min(10, len(valid_indices))
+    
+    # Save current RNG state
+    rng_state = sampler.rng.get_state()
+    
+    # Get groups from sampler
+    all_indices = []
+    seen_points = set()
+    colors = plt.cm.tab20(np.linspace(0, 1, num_groups))
+    
+    for center_idx in sampler.precomputed.hex_grid.valid_hex_indices[:num_groups]:
+        group = sampler._get_spatial_group(center_idx)
+        all_indices.extend(group)
+        
+        # Plot group points with unique color
+        group_coords = sampler.precomputed.coordinates[group]
+        color = colors[len(seen_points) % len(colors)]
+        
+        # Plot center and its group
+        ax2.scatter(
+            group_coords[:, 0],
+            group_coords[:, 1],
+            c=[color],
+            s=20,
+            alpha=0.6,
+            label=f'Group {len(seen_points)}'
+        )
+        
+        # Plot hex center
+        center = hex_centers[center_idx]
+        ax2.scatter(
+            [center[0]],
+            [center[1]],
+            c=[color],
+            marker='*',
+            s=200,
+            edgecolor='black'
+        )
+        
+        seen_points.update(group)
+    
+    # Restore RNG state
+    sampler.rng.set_state(rng_state)
+    
+    # Formatting
+    for ax in [ax1, ax2]:
+        ax.set_aspect('equal')
+        ax.grid(True, linestyle='--', alpha=0.3)
+        
+    # Add legend to second plot
+    ax2.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    # Adjust layout and save
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Visualization saved to {save_path}")
+
+@dataclass
+class HexGridData:
+    """Container for hexagonal grid data."""
+    hex_centers: np.ndarray  # Centers of all hexagons (N x 2)
+    valid_hex_indices: np.ndarray  # Indices of hexagons with enough points
+    hex_size: float  # Size (radius) of hexagons
+    points_per_hex: np.ndarray  # Number of points within radius of each hex center
+
+def hex_to_pixel(hex_q: int, hex_r: int, hex_size: float) -> Tuple[float, float]:
+    """Convert axial hex coordinates to pixel coordinates."""
+    x = hex_size * (3/2 * hex_q)
+    y = hex_size * (np.sqrt(3)/2 * hex_q + np.sqrt(3) * hex_r)
+    return x, y
+
+def pixel_to_hex(x: float, y: float, hex_size: float) -> Tuple[int, int]:
+    """Convert pixel coordinates to axial hex coordinates."""
+    q = (2/3 * x) / hex_size
+    r = (-1/3 * x + np.sqrt(3)/3 * y) / hex_size
+    return _axial_round(q, r)
+
+def _axial_round(q: float, r: float) -> Tuple[int, int]:
+    """Round floating point hex coordinates to nearest hex."""
+    s = -q - r
+    q_rounded = round(q)
+    r_rounded = round(r)
+    s_rounded = round(s)
+    
+    q_diff = abs(q_rounded - q)
+    r_diff = abs(r_rounded - r)
+    s_diff = abs(s_rounded - s)
+    
+    if q_diff > r_diff and q_diff > s_diff:
+        q_rounded = -r_rounded - s_rounded
+    elif r_diff > s_diff:
+        r_rounded = -q_rounded - s_rounded
+        
+    return q_rounded, r_rounded
 
 @dataclass
 class PrecomputedData:
-    """Container for precomputed spatial data using KD-tree"""
+    """Extended container for precomputed spatial data using KD-tree and hex grid"""
     coordinates: np.ndarray  # Only stores 2D coordinates
     tree: cKDTree
     x_range: float
     y_range: float
     initial_radius: float
+    hex_grid: HexGridData = None
+
+class HexagonalSpatialGroupSampler(Sampler):
+    """
+    Sampler that divides space into hexagonal regions and returns spatially coherent groups.
+    Uses deterministic iteration through randomly permuted valid hex centers.
+    """
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        group_size: int = 32,
+        coordinate_key: str = "CCF_streamlines",
+        seed: int = 0,
+        precomputed: Optional[PrecomputedData] = None
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.group_size = group_size
+        self.coordinate_key = coordinate_key
+        self.seed = seed
+        self.epoch = 0
+        
+        self.num_samples = len(dataset)
+        self.rng = np.random.RandomState(seed)
+        
+        if precomputed is not None:
+            self.precomputed = precomputed
+        else:
+            self.precomputed = self._precompute_spatial_data()
+
+    def _estimate_hex_size(self, coordinates: np.ndarray) -> float:
+        """
+        Estimate appropriate hexagon size based on point density and group size.
+        Each hexagon should contain roughly 1.5-2x group_size points on average
+        for good coverage and flexibility.
+        """
+        area = self.precomputed.x_range * self.precomputed.y_range
+        target_hex_count = len(coordinates) / (self.group_size * 1.5)
+        hex_area = area / target_hex_count
+        # For a hexagon, area = 2√3 * radius²
+        return np.sqrt(hex_area / (2 * np.sqrt(3)))
+
+    def _create_hex_grid(self, coordinates: np.ndarray, hex_size: float) -> HexGridData:
+        """Create hexagonal grid and identify valid centers."""
+        # Calculate grid dimensions
+        x_min, y_min = coordinates.min(axis=0)
+        x_max, y_max = coordinates.max(axis=0)
+        
+        # Add padding to ensure coverage of edge points
+        padding = hex_size * 2
+        x_min -= padding
+        y_min -= padding
+        x_max += padding
+        y_max += padding
+        
+        # Calculate grid bounds
+        q_range = int(np.ceil((x_max - x_min) / (hex_size * 3/2))) + 1
+        r_range = int(np.ceil((y_max - y_min) / (hex_size * np.sqrt(3)))) + 1
+        
+        # Generate hex centers
+        hex_centers = []
+        for q in range(-q_range, q_range + 1):
+            for r in range(-r_range, r_range + 1):
+                x, y = hex_to_pixel(q, r, hex_size)
+                x += (x_max + x_min) / 2  # Center the grid
+                y += (y_max + y_min) / 2
+                
+                # Skip if outside bounding box with padding
+                if x < x_min or x > x_max or y < y_min or y > y_max:
+                    continue
+                    
+                hex_centers.append([x, y])
+        
+        hex_centers = np.array(hex_centers)
+        
+        # Count points near each hex center
+        points_per_hex = np.zeros(len(hex_centers), dtype=int)
+        search_radius = hex_size * 1.5  # Slightly larger than hex size to ensure overlap
+        
+        for i, center in enumerate(hex_centers):
+            points_per_hex[i] = len(self.precomputed.tree.query_ball_point(
+                center, search_radius, workers=-1
+            ))
+        
+        # Identify valid hex centers (those with enough nearby points)
+        valid_hex_indices = np.where(points_per_hex >= self.group_size)[0]
+        
+        return HexGridData(
+            hex_centers=hex_centers,
+            valid_hex_indices=valid_hex_indices,
+            hex_size=hex_size,
+            points_per_hex=points_per_hex
+        )
+
+    def _precompute_spatial_data(self) -> PrecomputedData:
+        """Precompute spatial data including hex grid."""
+        print("Precomputing spatial data with hexagonal grid...")
+        
+        coordinates = np.array([
+            self.dataset[i][self.coordinate_key][:2] 
+            for i in range(len(self.dataset))
+        ])
+        
+        tree = cKDTree(coordinates)
+        x_range = np.ptp(coordinates[:, 0])
+        y_range = np.ptp(coordinates[:, 1])
+        
+        # Create hex grid
+        hex_size = self._estimate_hex_size(coordinates)
+        hex_grid = self._create_hex_grid(coordinates, hex_size)
+        
+        # Estimate initial radius for point queries
+        initial_radius = hex_size * 1.2  # Slightly larger than hex size
+        
+        print(f"Hex grid created with size {hex_size:.4f} and {len(hex_grid.valid_hex_indices)} valid centers")
+        
+        return PrecomputedData(
+            coordinates=coordinates,
+            tree=tree,
+            x_range=x_range,
+            y_range=y_range,
+            initial_radius=initial_radius,
+            hex_grid=hex_grid
+        )
+
+    def _get_spatial_group(self, center_idx: int) -> np.ndarray:
+            """Get indices for one spatial group using hex center with random jitter."""
+            base_center = self.precomputed.hex_grid.hex_centers[center_idx]
+            hex_size = self.precomputed.hex_grid.hex_size
+            
+            # Add random jitter within hex (about 40% of hex size)
+            jitter = self.rng.normal(0, 0.4 * hex_size, size=2)
+            center = base_center + jitter
+            radius = self.precomputed.initial_radius
+            
+            while True:
+                neighbor_indices = self.precomputed.tree.query_ball_point(
+                    center, radius, workers=-1
+                )
+                
+                if len(neighbor_indices) >= self.group_size:
+                    neighbor_coords = self.precomputed.coordinates[neighbor_indices]
+                    distances = np.sum((neighbor_coords - center) ** 2, axis=1)
+                    
+                    k = min(self.group_size, len(distances))
+                    closest_local_indices = np.argpartition(distances, k-1)[:k]
+                    selected_indices = np.array(neighbor_indices)[closest_local_indices]
+                    
+                    if len(selected_indices) >= self.group_size:
+                        return selected_indices[:self.group_size]
+                
+                radius *= 1.5
+
+    def visualize(
+        self,
+        save_path: str,
+        num_groups: Optional[int] = None,
+        figsize: Tuple[int, int] = (12, 12)
+        ) -> None:
+        """
+        Generate and save visualization of the hex grid and sampling pattern.
+        
+        Args:
+            save_path: Path to save the visualization
+            num_groups: Number of groups to visualize
+            figsize: Figure size in inches
+        """
+        os.makedirs(os.path.dirname(os.path.abspath(save_path)), exist_ok=True)
+        visualize_hex_grid(self, save_path, num_groups, figsize)
+
+    def __iter__(self) -> Iterator[int]:
+        """
+        Returns iterator of indices where spatial groups are kept together.
+        Randomly permutes valid hex centers at start of epoch, then iterates through them.
+        """
+        self.rng = np.random.RandomState(self.seed + self.epoch)
+        
+        # Generate random permutation of valid centers
+        valid_centers = self.precomputed.hex_grid.valid_hex_indices
+        permuted_centers = self.rng.permutation(valid_centers)
+        
+        all_indices = []
+        needed_groups = (self.num_samples + self.group_size - 1) // self.group_size
+        
+        # Handle special case of group_size=1
+        if self.group_size == 1:
+            return iter(range(self.num_samples))
+        
+        # Iterate through permuted centers
+        for center_idx in permuted_centers:
+            if len(all_indices) >= self.num_samples:
+                break
+                
+            group = self._get_spatial_group(center_idx)
+            remaining_space = self.num_samples - len(all_indices)
+            
+            if remaining_space >= self.group_size:
+                all_indices.extend(group)
+            else:
+                all_indices.extend(group[:remaining_space])
+                break
+        
+        # If we run out of centers, cycle through them again with different permutation
+        while len(all_indices) < self.num_samples:
+            permuted_centers = self.rng.permutation(valid_centers)
+            for center_idx in permuted_centers:
+                if len(all_indices) >= self.num_samples:
+                    break
+                    
+                group = self._get_spatial_group(center_idx)
+                remaining_space = self.num_samples - len(all_indices)
+                
+                if remaining_space >= self.group_size:
+                    all_indices.extend(group)
+                else:
+                    all_indices.extend(group[:remaining_space])
+                    break
+        
+        assert len(all_indices) == self.num_samples
+        return iter(all_indices)
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
 
 class SpatialGroupSampler(Sampler):
     """
@@ -409,6 +817,7 @@ class MultiformerTrainer(Trainer):
                  relative_positions=False,
                  absolute_Z=False,
                  additional_feature_keys=[],
+                 sampling_strategy='random',
                  **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
@@ -421,6 +830,14 @@ class MultiformerTrainer(Trainer):
             relative_positions=relative_positions,
             absolute_Z=absolute_Z
         )
+
+        if sampling_strategy == 'hex':
+            self.sampler_class = HexagonalSpatialGroupSampler
+        elif sampling_strategy == 'random':
+            self.sampler_class = SpatialGroupSampler
+        else:
+            raise ValueError(f"Invalid group strategy: {sampling_strategy}. Use 'hex' or 'random'.")
+
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
         self.coordinate_key = coordinate_key
@@ -429,6 +846,8 @@ class MultiformerTrainer(Trainer):
 
         self.precomputed_eval_sampler_data = None
         eval_sampler = self._get_eval_sampler(self.eval_dataset)
+        if sampling_strategy == 'hex':
+            eval_sampler.visualize("hex_grid_sampling.png", num_groups=1000)
         self.precomputed_eval_sampler_data = eval_sampler.precomputed if eval_sampler is not None else None
 
         assert self.args.train_batch_size % spatial_group_size == 0, \
@@ -448,7 +867,7 @@ class MultiformerTrainer(Trainer):
         # Build the sampler.
         # Use spatial sampling
         if self.args.world_size <= 1:
-            return SpatialGroupSampler(
+            return self.sampler_class(
                 dataset=self.train_dataset,
                 batch_size=self.args.train_batch_size,
                 group_size=self.spatial_group_size,
@@ -480,7 +899,7 @@ class MultiformerTrainer(Trainer):
         # Build the sampler.
         # Use spatial sampling for evaluation
         if self.args.world_size <= 1:
-            return SpatialGroupSampler(
+            return self.sampler_class(
                 dataset=eval_dataset,
                 batch_size=self.args.eval_batch_size,
                 group_size=self.spatial_group_size,
