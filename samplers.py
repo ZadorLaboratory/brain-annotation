@@ -228,7 +228,8 @@ class HexagonalSpatialGroupSampler(Sampler):
         group_size: int = 32,
         coordinate_key: str = "CCF_streamlines",
         seed: int = 0,
-        precomputed: Optional[PrecomputedData] = None
+        precomputed: Optional[PrecomputedData] = None,
+        add_jitter: bool = True
     ):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -236,6 +237,7 @@ class HexagonalSpatialGroupSampler(Sampler):
         self.coordinate_key = coordinate_key
         self.seed = seed
         self.epoch = 0
+        self.add_jitter = add_jitter
         
         self.num_samples = len(dataset)
         self.rng = np.random.RandomState(seed)
@@ -349,7 +351,8 @@ class HexagonalSpatialGroupSampler(Sampler):
         
         # Add random jitter within hex (about 50% of hex size)
         jitter = self.rng.normal(0, 0.3 * hex_size, size=2)
-        center = base_center + jitter
+        if self.add_jitter:
+            center = base_center + jitter
         
         radius = self.precomputed.initial_radius
         while True:
@@ -451,6 +454,7 @@ class SpatialGroupSampler(Sampler):
         group_size: Number of sentences per group
         coordinate_key: Key in dataset for accessing spatial coordinates
         seed: Random seed for reproducibility
+        add_jitter: Does nothing, here for compatibility with HexagonalSpatialGroupSampler
     """
     def __init__(
         self,
@@ -459,7 +463,8 @@ class SpatialGroupSampler(Sampler):
         group_size: int = 32,
         coordinate_key: str = "CCF_streamlines",
         seed: int = 0,
-        precomputed: Optional[PrecomputedData] = None
+        precomputed: Optional[PrecomputedData] = None,
+        add_jitter: bool = True
     ):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -883,7 +888,7 @@ class MultiformerTrainer(Trainer):
                 coordinate_key=self.coordinate_key
             )
 
-    def _get_eval_sampler(self, eval_dataset, precomputed=True) -> Optional[torch.utils.data.sampler.Sampler]:
+    def _get_eval_sampler(self, eval_dataset, precomputed=True, add_jitter=True) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(eval_dataset, collections.abc.Sized):
             return None
 
@@ -903,7 +908,8 @@ class MultiformerTrainer(Trainer):
                 group_size=self.spatial_group_size,
                 seed=self.args.seed,
                 precomputed=self.precomputed_eval_sampler_data if precomputed else None,
-                coordinate_key=self.coordinate_key
+                coordinate_key=self.coordinate_key,
+                add_jitter=add_jitter,
             )
         else:
             return DistributedSpatialGroupSampler(
@@ -922,6 +928,8 @@ class MultiformerTrainer(Trainer):
         Returns the test [`~torch.utils.data.DataLoader`].
 
         Same behavior as normal but custom in that we pass precomputed=False to _get_eval_sampler.
+
+        In addition, if we are using a hex grid, we do not add jitter.
 
         Args:
             test_dataset (`torch.utils.data.Dataset`, *optional*):
@@ -944,7 +952,7 @@ class MultiformerTrainer(Trainer):
         }
 
         if not isinstance(test_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False)
+            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False, add_jitter=False)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
