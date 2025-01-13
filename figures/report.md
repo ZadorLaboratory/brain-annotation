@@ -117,4 +117,8 @@ Note as well that I've reflected cells from the 'right' hemisphere to the 'left'
 
 <img src="group_predictions_with_benchmarks_effect_of_hex.png" alt="Spatial coverage" width="500">
 
-#### 
+#### Why stop there? Too large of a group size will lose meaning
+
+<img src="figures/num_areas_in_group.png" alt="Spatial coverage" width="500">
+
+At a certain point, the group size is so large that each group will contain cells from multiple brain areas. In the limit, one just predicts the larger brain area. Also, all cells that disagree with the modal area will be mislabeled.
