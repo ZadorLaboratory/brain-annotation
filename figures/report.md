@@ -115,3 +115,6 @@ Note as well that I've reflected cells from the 'right' hemisphere to the 'left'
 
 #### Results
 
+<img src="group_predictions_with_benchmarks_effect_of_hex.png" alt="Spatial coverage" width="500">
+
+#### 
