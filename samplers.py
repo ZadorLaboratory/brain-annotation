@@ -858,23 +858,26 @@ class MultiformerTrainer(Trainer):
         eval_sampler = self._get_eval_sampler(self.eval_dataset)
         if sampling_strategy == 'hex':
             eval_sampler.visualize("hex_grid_sampling.png", num_groups=None)
+            if self.args.world_size > 1:
+                raise NotImplementedError("HexagonalSpatialGroupSampler does not support distributed training. Simple fix if needed though, edit samplers and subclass, then edit MultiformerTrainer to use the new sampler.")
         self.precomputed_eval_sampler_data = eval_sampler.precomputed if eval_sampler is not None else None
 
         assert self.args.train_batch_size % spatial_group_size == 0, \
             "train_batch_size must be divisible by spatial_group_size"
-
+        
     def _get_train_sampler(self) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(self.train_dataset, collections.abc.Sized):
             return None
 
-        # Build the sampler.
-        # Use spatial sampling
+        # Randomize seed for training
+        random_seed = self.args.seed + torch.initial_seed()
+
         if self.args.world_size <= 1:
             return self.sampler_class(
                 dataset=self.train_dataset,
                 batch_size=self.args.train_batch_size,
                 group_size=self.spatial_group_size,
-                seed=self.args.seed,
+                seed=random_seed,
                 coordinate_key=self.coordinate_key
             )
         else:
@@ -883,30 +886,21 @@ class MultiformerTrainer(Trainer):
                 batch_size=self.args.train_batch_size,
                 num_replicas=self.args.world_size,
                 rank=self.args.process_index,
-                seed=self.args.seed,
+                seed=random_seed,
                 group_size=self.spatial_group_size,
                 coordinate_key=self.coordinate_key
             )
 
-    def _get_eval_sampler(self, eval_dataset, precomputed=True, add_jitter=True) -> Optional[torch.utils.data.sampler.Sampler]:
+    def _get_eval_sampler(self, eval_dataset, precomputed=True, add_jitter=True, eval_seed=42) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(eval_dataset, collections.abc.Sized):
             return None
 
-        generator = None
-        if self.args.world_size <= 1:
-            generator = torch.Generator()
-            generator.manual_seed(
-                int(torch.empty((), dtype=torch.int64).random_().item())
-            )
-
-        # Build the sampler.
-        # Use spatial sampling for evaluation
         if self.args.world_size <= 1:
             return self.sampler_class(
                 dataset=eval_dataset,
                 batch_size=self.args.eval_batch_size,
                 group_size=self.spatial_group_size,
-                seed=self.args.seed,
+                seed=eval_seed,
                 precomputed=self.precomputed_eval_sampler_data if precomputed else None,
                 coordinate_key=self.coordinate_key,
                 add_jitter=add_jitter,
@@ -917,13 +911,13 @@ class MultiformerTrainer(Trainer):
                 batch_size=self.args.eval_batch_size,
                 num_replicas=self.args.world_size,
                 rank=self.args.process_index,
-                seed=self.args.seed,
+                seed=eval_seed,
                 group_size=self.spatial_group_size,
                 precomputed=self.precomputed_eval_sampler_data if precomputed else None,
                 coordinate_key=self.coordinate_key
             )
 
-    def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
+    def get_test_dataloader(self, test_dataset: Dataset, seed=42) -> DataLoader:
         """
         Returns the test [`~torch.utils.data.DataLoader`].
 
@@ -952,7 +946,7 @@ class MultiformerTrainer(Trainer):
         }
 
         if not isinstance(test_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False, add_jitter=False)
+            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False, add_jitter=True, seed=seed)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
@@ -960,13 +954,13 @@ class MultiformerTrainer(Trainer):
         return self.accelerator.prepare(DataLoader(test_dataset, **dataloader_params))
 
     def predict(
-        self, test_dataset: Dataset, ignore_keys: Optional[List[str]] = None, metric_key_prefix: str = "test"
+        self, test_dataset: Dataset, ignore_keys: Optional[List[str]] = None, metric_key_prefix: str = "test", seed=42
     ) -> PredictionOutput:
         """Modified predict method that ensures indices match prediction order."""
         self._memory_tracker.start()
         
         # Get original dataloader
-        test_dataloader = self.get_test_dataloader(test_dataset)
+        test_dataloader = self.get_test_dataloader(test_dataset, seed)
         
         # Collect batches and indices in order
         collected_batches, ordered_indices = collect_batches_and_indices(test_dataloader)

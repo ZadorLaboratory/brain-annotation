@@ -417,30 +417,60 @@ def main(cfg: DictConfig) -> None:
     # Test and validation
     if cfg.run_test_set:
         for data_key in ["test", "validation"]:
+            # Initialize tensors to store results across epochs
+            all_locations = []
+            all_predictions = []
+            all_labels = []
+            all_indices = []
+            all_single_cell_predictions = []
+            all_single_cell_labels = []
 
-            trainer.accelerator.gradient_state._reset_state() # Fixes an odd bug where the trainer thinks the dataloader is finished so truncates further batches incorrectly
+            for epoch in range(cfg.num_predict_epochs):
+                trainer.accelerator.gradient_state._reset_state() # Fixes an odd bug where the trainer thinks the dataloader is finished so truncates further batches incorrectly
 
-            outputs = trainer.predict(
-                datasets[data_key],
-                metric_key_prefix=data_key
-            )
+                random_seed = cfg.seed + torch.initial_seed()
 
-            if "single-cell" in cfg.model.pretrained_type:
-                locations = datasets[data_key]["CCF_streamlines"]
-                indices = np.arange(len(datasets[data_key]))
-            else:
-                outputs, indices = outputs
-                locations = average_batch_location(np.array(datasets[data_key]["CCF_streamlines"]), indices, datasets[data_key]["uuid"])
+                outputs = trainer.predict(
+                    datasets[data_key],
+                    metric_key_prefix=data_key,
+                    seed=random_seed
+                )
 
-            if cfg.model.single_cell_loss_after_set:
-                predictions = np.argmax(outputs.predictions[0], axis=-1)
-                single_cell_predictions = np.argmax(outputs.predictions[1], axis=-1)
-            else:
-                predictions = np.argmax(outputs.predictions, axis=-1)
-                single_cell_predictions = None
+                if "single-cell" in cfg.model.pretrained_type:
+                    locations = datasets[data_key]["CCF_streamlines"]
+                    indices = np.arange(len(datasets[data_key]))
+                else:
+                    outputs, indices = outputs
+                    locations = average_batch_location(np.array(datasets[data_key]["CCF_streamlines"]), indices, datasets[data_key]["uuid"])
 
-            labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
-            single_cell_labels = outputs.label_ids[1] if isinstance(outputs.label_ids, tuple) else None
+                if cfg.model.single_cell_loss_after_set:
+                    predictions = np.argmax(outputs.predictions[0], axis=-1)
+                    single_cell_predictions = np.argmax(outputs.predictions[1], axis=-1)
+                else:
+                    predictions = np.argmax(outputs.predictions, axis=-1)
+                    single_cell_predictions = None
+
+                labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+                single_cell_labels = outputs.label_ids[1] if isinstance(outputs.label_ids, tuple) else None
+
+                # Append results from this epoch
+                all_locations.append(locations)
+                all_predictions.append(predictions)
+                all_labels.append(labels)
+                all_indices.append(indices)
+                if single_cell_predictions is not None:
+                    all_single_cell_predictions.append(single_cell_predictions)
+                if single_cell_labels is not None:
+                    all_single_cell_labels.append(single_cell_labels)
+
+            # Concatenate results from all epochs
+            locations = np.concatenate(all_locations, axis=0)
+            predictions = np.concatenate(all_predictions, axis=0)
+            labels = np.concatenate(all_labels, axis=0)
+            indices = np.concatenate(all_indices, axis=0)
+            single_cell_predictions = np.concatenate(all_single_cell_predictions, axis=0) if all_single_cell_predictions else None
+            single_cell_labels = np.concatenate(all_single_cell_labels, axis=0) if all_single_cell_labels else None
+                
             # Include label names in output
             output_dict = {
                 "locations": locations,
