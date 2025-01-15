@@ -229,7 +229,10 @@ class HexagonalSpatialGroupSampler(Sampler):
         coordinate_key: str = "CCF_streamlines",
         seed: int = 0,
         precomputed: Optional[PrecomputedData] = None,
-        add_jitter: bool = True
+        add_jitter: bool = True,
+        hex_scaling: Optional[float] = 1.2,
+        reflect_points: bool = True,
+        valid_hex_indices: Optional[np.ndarray] = None
     ):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -238,6 +241,9 @@ class HexagonalSpatialGroupSampler(Sampler):
         self.seed = seed
         self.epoch = 0
         self.add_jitter = add_jitter
+        self.hex_scaling = hex_scaling
+        self.reflect_points = reflect_points
+        self.valid_hex_indices = valid_hex_indices
         
         self.num_samples = len(dataset)
         self.rng = np.random.RandomState(seed)
@@ -248,13 +254,15 @@ class HexagonalSpatialGroupSampler(Sampler):
             self.precomputed = self._precompute_spatial_data()
 
     def _estimate_hex_size(self, coordinates: np.ndarray) -> float:
-        """Estimate appropriate hexagon size based on point density and group size."""
+        """Estimate appropriate hexagon size based on point density and target count or group size."""
+            
         x_range = np.ptp(coordinates[:, 0])
         y_range = np.ptp(coordinates[:, 1])
         area = x_range * y_range
         
         target_hex_count = len(coordinates) / (self.group_size * 1.5)
-        hex_area = area / target_hex_count * 1.2 # Slightly larger than needed b/c of anisotropy
+            
+        hex_area = area / target_hex_count * self.hex_scaling  # Slightly larger than needed b/c of anisotropy
         return np.sqrt(hex_area / (2 * np.sqrt(3)))
 
     def _create_hex_grid(self, coordinates: np.ndarray, hex_size: float, tree: cKDTree) -> HexGridData:
@@ -319,7 +327,8 @@ class HexagonalSpatialGroupSampler(Sampler):
             for i in range(len(self.dataset))
         ])
 
-        coordinates = reflect_points_to_left(coordinates)
+        if self.reflect_points:
+            coordinates = reflect_points_to_left(coordinates)
         
         # Build spatial index
         tree = cKDTree(coordinates)
@@ -329,6 +338,15 @@ class HexagonalSpatialGroupSampler(Sampler):
         # Create hex grid using coordinates directly
         hex_size = self._estimate_hex_size(coordinates)
         hex_grid = self._create_hex_grid(coordinates, hex_size, tree)
+        
+        # If valid_hex_indices was provided, use it instead of computing new ones
+        if self.valid_hex_indices is not None:
+            hex_grid = HexGridData(
+                hex_centers=hex_grid.hex_centers,
+                valid_hex_indices=self.valid_hex_indices,
+                hex_size=hex_grid.hex_size,
+                points_per_hex=hex_grid.points_per_hex
+            )
         
         # Estimate initial radius for point queries
         initial_radius = hex_size * 1.2  # Slightly larger than hex size
@@ -346,10 +364,16 @@ class HexagonalSpatialGroupSampler(Sampler):
 
     def _get_spatial_group(self, center_idx: int) -> np.ndarray:
         """Get indices for one spatial group using hex center with random jitter."""
+        print(f"Attempting to access center_idx: {center_idx}")
+        print(f"hex_centers shape: {self.precomputed.hex_grid.hex_centers.shape}")
+        print(f"valid_hex_indices shape: {self.precomputed.hex_grid.valid_hex_indices.shape}")
+        print(f"valid_hex_indices max: {self.precomputed.hex_grid.valid_hex_indices.max()}")
+        print(f"valid_hex_indices min: {self.precomputed.hex_grid.valid_hex_indices.min()}")
+        
         base_center = self.precomputed.hex_grid.hex_centers[center_idx]
         hex_size = self.precomputed.hex_grid.hex_size
         
-        # Add random jitter within hex (about 50% of hex size)
+        # Add random jitter within hex (about 30% of hex size)
         jitter = self.rng.normal(0, 0.3 * hex_size, size=2)
         if self.add_jitter:
             center = base_center + jitter
@@ -828,15 +852,18 @@ class MultiformerTrainer(Trainer):
                  absolute_Z=False,
                  additional_feature_keys=[],
                  sampling_strategy='random',
+                 hex_scaling=None,
+                 reflect_points=True,
+                 use_train_hex_validity=False,
                  **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
             label_key=spatial_label_key,
-            feature_keys=["input_ids"] + additional_feature_keys,  # Add other feature keys as needed
-            pad_token_id=0, # Adjust as needed
+            feature_keys=["input_ids"] + additional_feature_keys,
+            pad_token_id=0,
             add_single_cell_labels=add_single_cell_labels,
-            index_key=index_key,  # Add index tracking
-            coordinate_key="CCF_streamlines",
+            index_key=index_key,
+            coordinate_key=coordinate_key,
             relative_positions=relative_positions,
             absolute_Z=absolute_Z
         )
@@ -851,20 +878,29 @@ class MultiformerTrainer(Trainer):
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
         self.coordinate_key = coordinate_key
+        self.hex_scaling = hex_scaling
+        self.reflect_points = reflect_points
+        self.use_train_hex_validity = use_train_hex_validity
         
         super().__init__(*args, **kwargs)
 
         self.precomputed_eval_sampler_data = None
-        eval_sampler = self._get_eval_sampler(self.eval_dataset)
+        # Initialize training sampler first to get valid hexagons if needed
         if sampling_strategy == 'hex':
-            eval_sampler.visualize("hex_grid_sampling.png", num_groups=None)
+            train_sampler = self._get_train_sampler()
+            train_sampler.visualize("hex_grid_sampling.png", num_groups=None)
             if self.args.world_size > 1:
-                raise NotImplementedError("HexagonalSpatialGroupSampler does not support distributed training. Simple fix if needed though, edit samplers and subclass, then edit MultiformerTrainer to use the new sampler.")
+                raise NotImplementedError("HexagonalSpatialGroupSampler does not support distributed training.")
+            # Store valid hexagon indices from training for potential test-time use
+            self.train_valid_hex_indices = train_sampler.precomputed.hex_grid.valid_hex_indices if train_sampler else None
+            
+        # Now initialize eval sampler
+        eval_sampler = self._get_eval_sampler(self.eval_dataset)
         self.precomputed_eval_sampler_data = eval_sampler.precomputed if eval_sampler is not None else None
 
         assert self.args.train_batch_size % spatial_group_size == 0, \
             "train_batch_size must be divisible by spatial_group_size"
-        
+
     def _get_train_sampler(self) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(self.train_dataset, collections.abc.Sized):
             return None
@@ -878,7 +914,9 @@ class MultiformerTrainer(Trainer):
                 batch_size=self.args.train_batch_size,
                 group_size=self.spatial_group_size,
                 seed=random_seed,
-                coordinate_key=self.coordinate_key
+                coordinate_key=self.coordinate_key,
+                hex_scaling=self.hex_scaling,
+                reflect_points=self.reflect_points
             )
         else:
             return DistributedSpatialGroupSampler(
@@ -895,6 +933,11 @@ class MultiformerTrainer(Trainer):
         if not isinstance(eval_dataset, collections.abc.Sized):
             return None
 
+        # Pass train's valid hex indices if requested
+        valid_hex_indices = None
+        if self.use_train_hex_validity and hasattr(self, 'train_valid_hex_indices'):
+            valid_hex_indices = self.train_valid_hex_indices
+
         if self.args.world_size <= 1:
             return self.sampler_class(
                 dataset=eval_dataset,
@@ -904,6 +947,9 @@ class MultiformerTrainer(Trainer):
                 precomputed=self.precomputed_eval_sampler_data if precomputed else None,
                 coordinate_key=self.coordinate_key,
                 add_jitter=add_jitter,
+                hex_scaling=self.hex_scaling,
+                reflect_points=self.reflect_points,
+                valid_hex_indices=valid_hex_indices
             )
         else:
             return DistributedSpatialGroupSampler(

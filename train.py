@@ -224,11 +224,11 @@ def compute_metrics(eval_pred, label_names: Optional[Dict[int, str]] = None) -> 
         }
         
         # Add per-class metrics in a wandb-friendly format
-        for label in report:
-            if label not in ["accuracy", "macro avg", "weighted avg"]:
-                scalar_metrics[f"f1_{label}"] = report[label]["f1-score"]
-                scalar_metrics[f"precision_{label}"] = report[label]["precision"]
-                scalar_metrics[f"recall_{label}"] = report[label]["recall"]
+        # for label in report:
+        #     if label not in ["accuracy", "macro avg", "weighted avg"]:
+        #         scalar_metrics[f"f1_{label}"] = report[label]["f1-score"]
+        #         scalar_metrics[f"precision_{label}"] = report[label]["precision"]
+        #         scalar_metrics[f"recall_{label}"] = report[label]["recall"]
 
         # Add aggregate metrics
         scalar_metrics.update({
@@ -396,8 +396,11 @@ def main(cfg: DictConfig) -> None:
             coordinate_key='CCF_streamlines',
             relative_positions=cfg.model.relative_positions.enabled,
             absolute_Z=cfg.model.relative_positions.absolute_Z,
+            hex_scaling=cfg.data.sampling.hex_scaling,
+            reflect_points=cfg.data.sampling.reflect_points,
+            use_train_hex_validity=cfg.data.sampling.use_train_hex_validity,
+            sampling_strategy=cfg.data.sampling.strategy
         )
-        
     # Train
     if cfg.training.num_train_epochs > 0:
         train_result = trainer.train()
