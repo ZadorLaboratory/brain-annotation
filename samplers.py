@@ -946,7 +946,7 @@ class MultiformerTrainer(Trainer):
         }
 
         if not isinstance(test_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False, add_jitter=True, seed=seed)
+            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False, add_jitter=True, eval_seed=seed)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
