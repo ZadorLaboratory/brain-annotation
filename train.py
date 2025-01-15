@@ -398,8 +398,8 @@ def main(cfg: DictConfig) -> None:
             absolute_Z=cfg.model.relative_positions.absolute_Z,
             hex_scaling=cfg.data.sampling.hex_scaling,
             reflect_points=cfg.data.sampling.reflect_points,
-            use_train_hex_validity=cfg.data.sampling.use_train_hex_validity,
-            sampling_strategy=cfg.data.sampling.strategy
+            sampling_strategy=cfg.data.sampling.strategy,
+            use_train_hex_grid_on_eval=cfg.data.sampling.use_train_hex_grid_on_eval,
         )
     # Train
     if cfg.training.num_train_epochs > 0:

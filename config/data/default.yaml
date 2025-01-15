@@ -6,7 +6,7 @@ sampling:
   strategy: "hex"
   hex_scaling: 1.2
   reflect_points: true
-  use_train_hex_validity: true
+  use_train_hex_grid_on_eval: true
 
 label_key: "area_label"
 label_names:  # Mapping from label indices to names
