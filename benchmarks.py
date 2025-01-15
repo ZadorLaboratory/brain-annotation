@@ -140,7 +140,7 @@ def get_dataloaders(datasets: DatasetDict, cfg: DictConfig) -> Dict[str, DataLoa
         spatial_label_key="labels",
         coordinate_key='CCF_streamlines',
         additional_feature_keys=['raw_counts'],
-        sampling_strategy=cfg.data.sampling_strategy,
+        sampling_strategy=cfg.data.sampling.strategy,
     )
     
     # Get dataloaders
@@ -691,73 +691,3 @@ def main(cfg: DictConfig) -> None:
 
 if __name__ == "__main__":
         main()
-
-## Results of on_adata=True
-# wandb: Run summary:
-# wandb:       logistic_regression_bulk_expression_test_accuracy 0.1854
-# wandb:      logistic_regression_bulk_expression_train_accuracy 0.40067
-# wandb: logistic_regression_bulk_expression_validation_accuracy 0.191
-# wandb:                logistic_regression_h3type_test_accuracy 0.1699
-# wandb:               logistic_regression_h3type_train_accuracy 0.21056
-# wandb:          logistic_regression_h3type_validation_accuracy 0.175
-# wandb:             random_forest_bulk_expression_test_accuracy 0.2065
-# wandb:            random_forest_bulk_expression_train_accuracy 0.92122
-# wandb:       random_forest_bulk_expression_validation_accuracy 0.2
-# wandb:                      random_forest_h3type_test_accuracy 0.1454
-# wandb:                     random_forest_h3type_train_accuracy 0.15933
-# wandb:                random_forest_h3type_validation_accuracy 0.139
-
-## Results of on_adata=False
-# wandb:       logistic_regression_bulk_expression_test_accuracy 0.1657
-# wandb:      logistic_regression_bulk_expression_train_accuracy 0.1463
-# wandb: logistic_regression_bulk_expression_validation_accuracy 0.0914
-# wandb:                logistic_regression_h3type_test_accuracy 0.1863
-# wandb:               logistic_regression_h3type_train_accuracy 0.1971
-# wandb:          logistic_regression_h3type_validation_accuracy 0.1778
-# wandb:             random_forest_bulk_expression_test_accuracy 0.1633
-# wandb:            random_forest_bulk_expression_train_accuracy 0.5095
-# wandb:       random_forest_bulk_expression_validation_accuracy 0.1062
-# wandb:                      random_forest_h3type_test_accuracy 0.0975
-# wandb:                     random_forest_h3type_train_accuracy 0.1615
-# wandb:                random_forest_h3type_validation_accuracy 0.158
-
-
-# ### On all data
-# true
-# wandb:       logistic_regression_bulk_expression_test_accuracy 0.26067
-# wandb:      logistic_regression_bulk_expression_train_accuracy 0.26087
-# wandb: logistic_regression_bulk_expression_validation_accuracy 0.26088
-# wandb:                logistic_regression_h3type_test_accuracy 0.18645
-# wandb:               logistic_regression_h3type_train_accuracy 0.18792
-# wandb:          logistic_regression_h3type_validation_accuracy 0.1863
-# wandb:             random_forest_bulk_expression_test_accuracy 0.25975
-# wandb:            random_forest_bulk_expression_train_accuracy 0.42724
-# wandb:       random_forest_bulk_expression_validation_accuracy 0.26243
-# wandb:                      random_forest_h3type_test_accuracy 0.14709
-# wandb:                     random_forest_h3type_train_accuracy 0.14894
-# wandb:                random_forest_h3type_validation_accuracy 0.14985
-
-# false
-# wandb: Run summary:
-# wandb:       logistic_regression_bulk_expression_test_accuracy 0.09024
-# wandb:      logistic_regression_bulk_expression_train_accuracy 0.12697
-# wandb: logistic_regression_bulk_expression_validation_accuracy 0.1246
-# wandb:                logistic_regression_h3type_test_accuracy 0.17947
-# wandb:               logistic_regression_h3type_train_accuracy 0.19149
-# wandb:          logistic_regression_h3type_validation_accuracy 0.19145
-# wandb:             random_forest_bulk_expression_test_accuracy 0.08254
-# wandb:            random_forest_bulk_expression_train_accuracy 0.22865
-# wandb:       random_forest_bulk_expression_validation_accuracy 0.11936
-# wandb:                      random_forest_h3type_test_accuracy 0.12144
-# wandb:                     random_forest_h3type_train_accuracy 0.1483
-# wandb:                random_forest_h3type_validation_accuracy 0.14861
-# wandb: 
-
-# These should be the same. The only difference is that the first one uses the adata directly, while the second one uses the dataloader.
-# It is clearly just a problem with the bulk expression. Suggests an indexing or feature extraction problem.
-# Debugging strategies:
-# - Build a fake small dataset (would require re-tokenizing the data)
-# 
-# Hypotheses:
-# - selecting the "Wrong" datapoints?
-# - or messing up the features?
