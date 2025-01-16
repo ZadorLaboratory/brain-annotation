@@ -24,6 +24,7 @@ parser.add_argument('--gene-panel-path', type=str, default="files/barseq_gene_pa
                     help='Path to a gene panel file. If none, all genes are used. The gene panel file should be a pickle of a list. The gene names should be Ensemble gene IDs.')
 parser.add_argument('--nproc', type=int, default=24, help='number of processes')
 parser.add_argument('--output_prefix', type=str, default="train_test_barseq", help='output prefix for the tokenized files')
+parser.add_argument('--cv-fold', type=int, default=0, help='Int [0,4], which fold to use as test set. A bit hacky & hardcoded')
 parser.add_argument('--raw-counts', action='store_true', help='Add raw counts to the tokenized dataset')    
 args = parser.parse_args()
 print("args:", args)
@@ -60,11 +61,13 @@ label_dict = {label: label for label in labels}
 
 # All the odd-numbered animals were controls, and the even-numbered animals were enucleated.
 # For example, D076-1L is a control, and D076-4L is enucleated.
-train_filenames = ['filt_neurons_D076_1L_CCFv2_newtypes.h5ad', 
+all_filenames = ['filt_neurons_D076_1L_CCFv2_newtypes.h5ad', 
                    'filt_neurons_D077_1L_CCFv2_newtypes.h5ad',
                     'filt_neurons_D078_1L_CCFv2_newtypes.h5ad',
-                    ]
-test_filenames = ['filt_neurons_D079_3L_CCFv2_newtypes.h5ad',]
+                    'filt_neurons_D079_3L_CCFv2_newtypes.h5ad',]
+
+train_filenames = [filename for i, filename in enumerate(all_filenames) if i != args.cv_fold]
+test_filenames = [filename for i, filename in enumerate(all_filenames) if i == args.cv_fold]
 
 datasets = []
 for filename in train_filenames:
@@ -112,12 +115,15 @@ for filename in test_filenames:
     
     datasets.append(tokenized_dataset)
 
-test_dataset = interleave_datasets(datasets)
+if len(datasets) > 0:
+    test_dataset = interleave_datasets(datasets)
 
-# Merge train and test datasets
-final_dataset = DatasetDict({
-    'train': dataset,
-    'test': test_dataset
-})
+    # Merge train and test datasets
+    final_dataset = DatasetDict({
+        'train': dataset,
+        'test': test_dataset
+    })
 
-final_dataset.save_to_disk(os.path.join(args.output_directory, f"{args.output_prefix}.dataset"))
+    final_dataset.save_to_disk(os.path.join(args.output_directory, f"{args.output_prefix}_fold{args.cv_fold}.dataset"))
+else:
+    dataset.save_to_disk(os.path.join(args.output_directory, f"{args.output_prefix}_all_train.dataset"))
