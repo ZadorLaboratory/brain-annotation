@@ -13,6 +13,28 @@ import pandas as pd
 from collections import defaultdict
 import warnings
 
+def reflect_points_to_left(coords: np.ndarray) -> np.ndarray:
+    """
+    Reflects coordinates that are right of x=1176.5 to the left side.
+    Points already on the left remain unchanged.
+
+    This is a one-time thing needed for the data from Chen et al. (2020); all data should be left hemisphere.
+    
+    Args:
+        coords: Array of shape (N, 2) containing x,y coordinates
+        
+    Returns:
+        reflected: Array of same shape with right-side points reflected
+    """
+    x_line = 1176.5
+    reflected = coords.copy()
+    
+    # Only reflect points where x > x_line
+    right_side_mask = coords[:, 0] > x_line
+    reflected[right_side_mask, 0] = 2 * x_line - coords[right_side_mask, 0]
+    
+    return reflected
+
 def compute_hierarchical_averages(df, h3_vectors):
     """
     Compute average vectors for hierarchical types based on their contained H3 types.
