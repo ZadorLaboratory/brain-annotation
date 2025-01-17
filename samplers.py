@@ -84,13 +84,6 @@ def visualize_hex_grid(
     hex_centers = sampler.precomputed.hex_grid.hex_centers
     valid_indices = sampler.precomputed.hex_grid.valid_hex_indices
     hex_size = sampler.precomputed.hex_grid.hex_size
-    points_per_hex = sampler.precomputed.hex_grid.points_per_hex
-    
-    # Create colormap for point density
-    norm = mcolors.Normalize(
-        vmin=0,
-        vmax=max(points_per_hex[valid_indices])
-    )
     
     # Plot hexagons
     for idx in range(len(hex_centers)):
@@ -135,27 +128,47 @@ def visualize_hex_grid(
     all_indices = []
     seen_points = set()
     colors = plt.cm.tab20(np.linspace(0, 1, num_groups))
+    successful_groups = 0
+    attempts = 0
+    max_attempts = num_groups * 2  # Allow some retries
     
-    for center_idx in sampler.precomputed.hex_grid.valid_hex_indices[:num_groups]:
+    while successful_groups < num_groups and attempts < max_attempts:
+        center_idx = valid_indices[attempts % len(valid_indices)]
         group = sampler._get_spatial_group(center_idx)
+        attempts += 1
+        
+        if group is None:
+            continue
+            
         all_indices.extend(group)
         
         # Plot group points with unique color
         group_coords = sampler.precomputed.coordinates[group]
-        color = colors[len(seen_points) % len(colors)]
+        color = colors[successful_groups % len(colors)]
         
         # Plot hex center
         center = hex_centers[center_idx]
         ax2.scatter(
+            group_coords[:, 0],
+            group_coords[:, 1],
+            c=[color],
+            s=5,
+            alpha=0.7
+        )
+        ax2.scatter(
             [center[0]],
             [center[1]],
             c=[color],
-            marker='.',
-            s=20,
+            marker='*',
+            s=100,
             edgecolor='black'
         )
         
         seen_points.update(group)
+        successful_groups += 1
+    
+    if successful_groups < num_groups:
+        print(f"Warning: Could only visualize {successful_groups}/{num_groups} groups")
     
     # Restore RNG state
     sampler.rng.set_state(rng_state)
@@ -265,6 +278,18 @@ class HexagonalSpatialGroupSampler(Sampler):
         target_hex_count = len(coordinates) / (self.group_size * 1.5)
             
         hex_area = area / target_hex_count * self.hex_scaling  # Slightly larger than needed b/c of anisotropy
+                
+        print(f"Estimating hex size:")
+        print(f"  Total points: {len(coordinates)}")
+        print(f"  Target hex count: {target_hex_count:.0f}")
+        print(f"  Target cells per hex: {self.group_size * 1.5}")
+        
+        # Calculate hex size to achieve this coverage
+        hex_area = area / target_hex_count
+        hex_size = np.sqrt(hex_area / (2 * np.sqrt(3)))
+        
+        print(f"  Estimated hex size: {hex_size:.2f}")
+
         return np.sqrt(hex_area / (2 * np.sqrt(3)))
 
     def _create_hex_grid(self, coordinates: np.ndarray, hex_size: float, tree: cKDTree) -> HexGridData:
@@ -311,6 +336,12 @@ class HexagonalSpatialGroupSampler(Sampler):
         
         # Identify valid hex centers (those with enough nearby points)
         valid_hex_indices = np.where(points_per_hex >= self.group_size)[0]
+        
+        print(f"Hex grid created:")
+        print(f"  Total hexagons: {len(hex_centers)}")
+        print(f"  Valid hexagons: {len(valid_hex_indices)}")
+        print(f"  Base search radius: {search_radius:.2f}")
+        print(f"  Mean points within max radius: {points_per_hex[valid_hex_indices].mean():.1f}")
         
         return HexGridData(
             hex_centers=hex_centers,
@@ -394,7 +425,8 @@ class HexagonalSpatialGroupSampler(Sampler):
             radius *= 1.5
             expansions += 1
         
-        return None  # Return None if we couldn't find enough points
+        # If we get here, we couldn't find enough points within max radius
+        return None
 
     def visualize(
         self,
@@ -881,6 +913,7 @@ class MultiformerTrainer(Trainer):
                  reflect_points=True,
                  max_radius_expansions=2,
                  use_train_hex_grid_on_eval=True,
+                 visualize_hex_grid=False,
                  **kwargs):
         kwargs["data_collator"] = SpatialGroupCollator(
             group_size=spatial_group_size,
@@ -915,7 +948,8 @@ class MultiformerTrainer(Trainer):
         # Initialize training sampler first to get valid hexagons if needed
         if sampling_strategy == 'hex':
             train_sampler = self._get_train_sampler()
-            train_sampler.visualize(f"hex_grid_sampling_gs_{spatial_group_size}.png", num_groups=None)
+            if visualize_hex_grid:
+                train_sampler.visualize(f"hex_grid_sampling_gs_{spatial_group_size}.png", num_groups=None)
             
             if self.args.world_size > 1:
                 raise NotImplementedError("HexagonalSpatialGroupSampler does not support distributed training.")

@@ -69,7 +69,7 @@ class SetTransformerLayer(nn.Module):
             dropout=config.dropout_prob,
             batch_first=True
         )
-        self.layer_norm1 = nn.LayerNorm(config.set_hidden_size)
+        self.layer_norm1 = nn.LayerNorm(config.set_hidden_size) # todo: test RMSnorm
         self.layer_norm2 = nn.LayerNorm(config.set_hidden_size)
         self.feedforward = nn.Sequential(
             nn.Linear(config.set_hidden_size, config.set_hidden_size * 4),
@@ -284,15 +284,11 @@ class HierarchicalBert(BertPreTrainedModel):
         if self.detach_bert_embeddings:
             sentence_embeddings = sentence_embeddings.detach()
 
-        # Reshape to (batch_size, num_sentences, hidden_size) 
-        sentence_embeddings = sentence_embeddings.view(batch_size, num_sentences, -1)
-        assert sentence_embeddings.shape == (batch_size, num_sentences, bert_outputs.last_hidden_state.size(-1)), \
-            f"Expected sentence_embeddings shape (batch_size, num_sentences, hidden_size), got {sentence_embeddings.shape}"
-        
         # Project if necessary
         sentence_embeddings = self.hidden_projection(sentence_embeddings)
-        assert sentence_embeddings.shape == (batch_size, num_sentences, self.original_set_dim), \
-            f"Expected projected embeddings shape (batch_size, num_sentences, original_set_dim), got {sentence_embeddings.shape}"
+
+        # Reshape to (batch_size, num_sentences, hidden_size) 
+        sentence_embeddings = sentence_embeddings.view(batch_size, num_sentences, -1)
         
         # Handle relative positions if enabled
         if self.use_relative_positions and relative_positions is not None:
