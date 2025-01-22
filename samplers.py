@@ -246,7 +246,8 @@ class HexagonalSpatialGroupSampler(Sampler):
         hex_scaling: Optional[float] = 1.2,
         reflect_points: bool = True,
         hex_grid: Optional[HexGridData] = None, 
-        max_radius_expansions: int = 2 
+        max_radius_expansions: int = 2,
+        group_within_keys: Optional[List[str]] = None
     ):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -259,6 +260,10 @@ class HexagonalSpatialGroupSampler(Sampler):
         self.reflect_points = reflect_points
         self.hex_grid = hex_grid  # Store provided hex grid
         self.max_radius_expansions = max_radius_expansions
+        self.group_within_keys = group_within_keys
+        if self.group_within_keys is not None:
+            if not hasattr(self.group_within_keys, '__iter__'):
+                self.group_within_keys = [self.group_within_keys]
         
         self.num_samples = len(dataset)
         self.rng = np.random.RandomState(seed)
@@ -268,6 +273,24 @@ class HexagonalSpatialGroupSampler(Sampler):
         else:
             self.precomputed = self._precompute_spatial_data()
 
+    def _maybe_subset_group_by_keys(self, group_indices: np.ndarray) -> np.ndarray:
+        """
+        If group_within_keys is specified, subset the group to only include indices
+        that share the same value for the specified key.
+        """
+        if self.group_within_keys is None:
+            return group_indices
+        
+        for key in self.group_within_keys:
+            first_key_value = self.dataset[group_indices[0]][key]
+            matching_indices = [
+                idx for idx in group_indices 
+                if (self.dataset[idx][key] == first_key_value)
+            ]
+            group_indices = matching_indices
+
+        return np.array(matching_indices)
+
     def _estimate_hex_size(self, coordinates: np.ndarray) -> float:
         """Estimate appropriate hexagon size based on point density and target count or group size."""
             
@@ -275,7 +298,7 @@ class HexagonalSpatialGroupSampler(Sampler):
         y_range = np.ptp(coordinates[:, 1])
         area = x_range * y_range
         
-        target_hex_count = len(coordinates) / (self.group_size * 1.5)
+        target_hex_count = len(coordinates) / self.group_size
             
         hex_area = area / target_hex_count * self.hex_scaling  # Slightly larger than needed b/c of anisotropy
                 
@@ -285,12 +308,11 @@ class HexagonalSpatialGroupSampler(Sampler):
         print(f"  Target cells per hex: {self.group_size * 1.5}")
         
         # Calculate hex size to achieve this coverage
-        hex_area = area / target_hex_count
         hex_size = np.sqrt(hex_area / (2 * np.sqrt(3)))
         
         print(f"  Estimated hex size: {hex_size:.2f}")
 
-        return np.sqrt(hex_area / (2 * np.sqrt(3)))
+        return hex_size
 
     def _create_hex_grid(self, coordinates: np.ndarray, hex_size: float, tree: cKDTree) -> HexGridData:
         """Create hexagonal grid and identify valid centers."""
@@ -418,6 +440,8 @@ class HexagonalSpatialGroupSampler(Sampler):
                 k = min(self.group_size, len(distances))
                 closest_local_indices = np.argpartition(distances, k-1)[:k]
                 selected_indices = np.array(neighbor_indices)[closest_local_indices]
+
+                selected_indices = self._maybe_subset_group_by_keys(selected_indices)
                 
                 if len(selected_indices) >= self.group_size:
                     return selected_indices[:self.group_size]
@@ -518,6 +542,120 @@ class HexagonalSpatialGroupSampler(Sampler):
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
+class DistributedHexagonalSpatialGroupSampler(HexagonalSpatialGroupSampler):
+    """
+    Distributed version of HexagonalSpatialGroupSampler for multi-GPU training.
+    Inherits hex grid sampling behavior and adds distribution across processes.
+    """
+    def __init__(
+        self,
+        dataset: Dataset,
+        batch_size: int,
+        num_replicas: Optional[int] = None,
+        rank: Optional[int] = None,
+        seed: int = 0,
+        drop_last: bool = False,
+        group_size: int = 32,
+        coordinate_key: str = "CCF_streamlines",
+        precomputed: Optional[PrecomputedData] = None,
+        add_jitter: bool = True,
+        hex_scaling: Optional[float] = 1.2,
+        reflect_points: bool = True,
+        hex_grid: Optional[HexGridData] = None,
+        max_radius_expansions: int = 2,
+        group_within_keys: Optional[List[str]] = None
+    ):
+        # Initialize distributed parameters
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            rank = dist.get_rank()
+            
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.drop_last = drop_last
+        
+        # Initialize base hex sampler
+        super().__init__(
+            dataset=dataset,
+            batch_size=batch_size,
+            group_size=group_size,
+            coordinate_key=coordinate_key,
+            seed=seed,
+            precomputed=precomputed,
+            add_jitter=add_jitter,
+            hex_scaling=hex_scaling,
+            reflect_points=reflect_points,
+            hex_grid=hex_grid,
+            max_radius_expansions=max_radius_expansions,
+            group_within_keys=group_within_keys
+        )
+        
+        # Calculate number of samples for this process
+        if self.drop_last and len(dataset) % self.num_replicas != 0:
+            self.num_samples = math.ceil(
+                (len(dataset) - self.num_replicas) / self.num_replicas
+            )
+        else:
+            self.num_samples = math.ceil(len(dataset) / self.num_replicas)
+            
+        self.total_size = self.num_samples * self.num_replicas
+
+    def __iter__(self) -> Iterator[int]:
+        """Returns distributed iterator of indices where spatial groups are kept together."""
+        # Set RNG state
+        self.rng = np.random.RandomState(self.seed + self.epoch)
+        
+        # Handle special case of group_size=1
+        if self.group_size == 1:
+            indices = list(range(len(self.dataset)))
+            if len(indices) < self.total_size:
+                indices = indices * (self.total_size // len(indices) + 1)
+            indices = indices[:self.total_size]
+            return iter(indices[self.rank:self.total_size:self.num_replicas])
+            
+        # Get valid centers and shuffle them
+        valid_centers = self.precomputed.hex_grid.valid_hex_indices
+        if len(valid_centers) == 0:
+            raise ValueError("No valid hex centers found with sufficient points")
+
+        # Generate groups until we have enough samples
+        all_indices = []
+        centers_queue = list(self.rng.permutation(valid_centers))
+        
+        while len(all_indices) < self.total_size:
+            if not centers_queue:
+                centers_queue = list(self.rng.permutation(valid_centers))
+            
+            center_idx = centers_queue.pop(0)
+            group = self._get_spatial_group(center_idx)
+            
+            if group is not None:
+                all_indices.extend(group)
+                
+        # Trim or pad to exact size
+        if len(all_indices) > self.total_size:
+            all_indices = all_indices[:self.total_size]
+        else:
+            all_indices = (all_indices * (self.total_size // len(all_indices) + 1))[:self.total_size]
+
+        # Get indices for this rank
+        indices = all_indices[self.rank:self.total_size:self.num_replicas]
+        assert len(indices) == self.num_samples
+        
+        return iter(indices)
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def set_epoch(self, epoch: int) -> None:
+        """Sets the epoch for this sampler."""
+        self.epoch = epoch
+        
 class SpatialGroupSampler(Sampler):
     """
     Sampler that groups sentences based on spatial proximity in 2D space.
@@ -530,6 +668,7 @@ class SpatialGroupSampler(Sampler):
         coordinate_key: Key in dataset for accessing spatial coordinates
         seed: Random seed for reproducibility
         add_jitter: Does nothing, here for compatibility with HexagonalSpatialGroupSampler
+        group_within_keys: List or None. If not None, groups are formed within these keys. e.g. within an animal or cell type
     """
     def __init__(
         self,
@@ -539,11 +678,9 @@ class SpatialGroupSampler(Sampler):
         coordinate_key: str = "CCF_streamlines",
         seed: int = 0,
         precomputed: Optional[PrecomputedData] = None,
-        add_jitter: bool = True,
-        hex_scaling=None,
         reflect_points=False,
-        hex_grid=None,
-        max_radius_expansions=None
+        group_within_keys=None,
+        **kwargs
     ):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -552,6 +689,10 @@ class SpatialGroupSampler(Sampler):
         self.seed = seed
         self.epoch = 0
         self.reflect_points = reflect_points
+        self.group_within_keys = group_within_keys    
+        if self.group_within_keys is not None:
+            if not hasattr(self.group_within_keys, '__iter__'):
+                self.group_within_keys = [self.group_within_keys]
         
         self.num_samples = len(dataset)
         self.rng = check_random_state(seed)
@@ -610,6 +751,24 @@ class SpatialGroupSampler(Sampler):
             y_range=y_range,
             initial_radius=initial_radius
         )
+    
+    def _maybe_subset_group_by_keys(self, group_indices: np.ndarray) -> np.ndarray:
+        """
+        If group_within_keys is specified, subset the group to only include indices
+        that share the same value for the specified key.
+        """
+        if self.group_within_keys is None:
+            return group_indices
+        
+        for key in self.group_within_keys:
+            first_key_value = self.dataset[group_indices[0]][key]
+            matching_indices = [
+                idx for idx in group_indices 
+                if (self.dataset[idx][key] == first_key_value)
+            ]
+            group_indices = matching_indices
+
+        return np.array(matching_indices)
 
     def _get_spatial_group(self, center_idx: int) -> np.ndarray:
         """Get indices for one spatial group using KD-tree search."""
@@ -632,6 +791,9 @@ class SpatialGroupSampler(Sampler):
                 k = min(effective_group_size, len(distances))
                 closest_local_indices = np.argpartition(distances, k-1)[:k]
                 selected_indices = np.array(neighbor_indices)[closest_local_indices]
+
+                # Subset group by keys if necessary
+                selected_indices = self._maybe_subset_group_by_keys(selected_indices)
                 
                 # If we somehow still don't have enough points, expand radius
                 if len(selected_indices) >= effective_group_size:
@@ -696,8 +858,11 @@ class DistributedSpatialGroupSampler(Sampler):
         drop_last: bool = False,
         group_size: int = 32,
         coordinate_key: str = "CCF_streamlines",
-        precomputed: Optional[PrecomputedData] = None
-    ):
+        precomputed: Optional[PrecomputedData] = None,
+        reflect_points=False,
+        group_within_keys=None,
+        **kwargs
+        ):
         if num_replicas is None:
             if not dist.is_available():
                 raise RuntimeError("Requires distributed package to be available")
@@ -715,6 +880,12 @@ class DistributedSpatialGroupSampler(Sampler):
         self.drop_last = drop_last
         self.group_size = group_size
         self.coordinate_key = coordinate_key
+        self.reflect_points = reflect_points
+
+        self.group_within_keys = group_within_keys
+        if self.group_within_keys is not None:
+            if not hasattr(self.group_within_keys, '__iter__'):
+                self.group_within_keys = [self.group_within_keys]
 
         if self.drop_last and len(self.dataset) % self.num_replicas != 0:
             self.num_samples = math.ceil(
@@ -736,6 +907,7 @@ class DistributedSpatialGroupSampler(Sampler):
     _precompute_spatial_data = SpatialGroupSampler._precompute_spatial_data
     _get_spatial_group = SpatialGroupSampler._get_spatial_group
     _estimate_initial_radius = SpatialGroupSampler._estimate_initial_radius
+    _maybe_subset_group_by_keys = SpatialGroupSampler._maybe_subset_group_by_keys
 
     def __iter__(self) -> Iterator[int]:
         """Returns distributed iterator of indices where spatial groups are kept together."""
@@ -905,6 +1077,7 @@ class MultiformerTrainer(Trainer):
                  spatial_label_key='area_labels', 
                  index_key='uuid',
                  coordinate_key='CCF_streamlines',
+                 group_within_keys=None,
                  relative_positions=False,
                  absolute_Z=False,
                  additional_feature_keys=[],
@@ -927,13 +1100,6 @@ class MultiformerTrainer(Trainer):
             absolute_Z=absolute_Z
         )
 
-        if sampling_strategy == 'hex':
-            self.sampler_class = HexagonalSpatialGroupSampler
-        elif sampling_strategy == 'random':
-            self.sampler_class = SpatialGroupSampler
-        else:
-            raise ValueError(f"Invalid group strategy: {sampling_strategy}. Use 'hex' or 'random'.")
-
         # Store spatial sampling parameters
         self.spatial_group_size = spatial_group_size
         self.coordinate_key = coordinate_key
@@ -941,8 +1107,22 @@ class MultiformerTrainer(Trainer):
         self.reflect_points = reflect_points
         self.max_radius_expansions = max_radius_expansions
         self.use_train_hex_grid_on_eval = use_train_hex_grid_on_eval
+        self.group_within_keys = group_within_keys
 
         super().__init__(*args, **kwargs)
+
+        if sampling_strategy == 'hex':
+            if self.args.world_size <= 1:
+                self.sampler_class = HexagonalSpatialGroupSampler
+            else:
+                self.sampler_class = DistributedHexagonalSpatialGroupSampler
+        elif sampling_strategy == 'random':
+            if self.args.world_size <= 1:
+                self.sampler_class = SpatialGroupSampler
+            else:
+                self.sampler_class = DistributedSpatialGroupSampler
+        else:
+            raise ValueError(f"Invalid group strategy: {sampling_strategy}. Use 'hex' or 'random'.")
 
         self.precomputed_eval_sampler_data = None
         # Initialize training sampler first to get valid hexagons if needed
@@ -950,9 +1130,6 @@ class MultiformerTrainer(Trainer):
             train_sampler = self._get_train_sampler()
             if visualize_hex_grid:
                 train_sampler.visualize(f"hex_grid_sampling_gs_{spatial_group_size}.png", num_groups=None)
-            
-            if self.args.world_size > 1:
-                raise NotImplementedError("HexagonalSpatialGroupSampler does not support distributed training.")
             
             # Store hex grid for use in eval/test
             self.hex_grid = train_sampler.precomputed.hex_grid
@@ -971,33 +1148,23 @@ class MultiformerTrainer(Trainer):
         # Randomize seed for training
         random_seed = self.args.seed + torch.initial_seed()
 
-        if self.args.world_size <= 1:
-            return self.sampler_class(
+        return self.sampler_class(
                 dataset=self.train_dataset,
                 batch_size=self.args.train_batch_size,
                 group_size=self.spatial_group_size,
                 seed=random_seed,
                 coordinate_key=self.coordinate_key,
                 hex_scaling=self.hex_scaling,
-                reflect_points=self.reflect_points
+                reflect_points=self.reflect_points,
+                group_within_keys=self.group_within_keys,
             )
-        else:
-            return DistributedSpatialGroupSampler(
-                dataset=self.train_dataset,
-                batch_size=self.args.train_batch_size,
-                num_replicas=self.args.world_size,
-                rank=self.args.process_index,
-                seed=random_seed,
-                group_size=self.spatial_group_size,
-                coordinate_key=self.coordinate_key
-            )
+        
 
     def _get_eval_sampler(self, eval_dataset, precomputed=True, add_jitter=True, eval_seed=42) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(eval_dataset, collections.abc.Sized):
             return None
 
-        if self.args.world_size <= 1:
-            return self.sampler_class(
+        return self.sampler_class(
                 dataset=eval_dataset,
                 batch_size=self.args.eval_batch_size,
                 group_size=self.spatial_group_size,
@@ -1008,20 +1175,10 @@ class MultiformerTrainer(Trainer):
                 hex_scaling=self.hex_scaling,
                 reflect_points=self.reflect_points,
                 hex_grid=self.hex_grid if (hasattr(self, 'hex_grid') and self.use_train_hex_grid_on_eval) else None,
-                max_radius_expansions=self.max_radius_expansions
+                max_radius_expansions=self.max_radius_expansions,
+                group_within_keys=self.group_within_keys,
             )
-        else:
-            return DistributedSpatialGroupSampler(
-                dataset=eval_dataset,
-                batch_size=self.args.eval_batch_size,
-                num_replicas=self.args.world_size,
-                rank=self.args.process_index,
-                seed=eval_seed,
-                group_size=self.spatial_group_size,
-                precomputed=self.precomputed_eval_sampler_data if precomputed else None,
-                coordinate_key=self.coordinate_key
-            )
-
+        
     def get_test_dataloader(self, test_dataset: Dataset, seed=42) -> DataLoader:
         """
         Returns the test [`~torch.utils.data.DataLoader`].

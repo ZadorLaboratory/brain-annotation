@@ -434,6 +434,8 @@ def main(cfg: DictConfig) -> None:
             reflect_points=cfg.data.sampling.reflect_points,
             sampling_strategy=cfg.data.sampling.strategy,
             use_train_hex_grid_on_eval=cfg.data.sampling.use_train_hex_grid_on_eval,
+            max_radius_expansions=cfg.data.sampling.max_radius_expansions,
+            group_within_keys=cfg.data.sampling.group_within_keys
         )
     # Train
     if cfg.training.num_train_epochs > 0:
