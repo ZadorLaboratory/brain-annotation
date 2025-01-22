@@ -8,6 +8,7 @@ import os
 from datasets import Dataset, interleave_datasets, DatasetDict
 import numpy as np
 import json
+import anndata as ad
 
 parent_directory = os.environ.get('ROOT_DATA_PATH') # /home/benjami/mnt/zador_data_norepl/Ari/transcriptomics
 
@@ -25,7 +26,9 @@ parser.add_argument('--gene-panel-path', type=str, default="files/barseq_gene_pa
 parser.add_argument('--nproc', type=int, default=24, help='number of processes')
 parser.add_argument('--output_prefix', type=str, default="train_test_barseq", help='output prefix for the tokenized files')
 parser.add_argument('--cv-fold', type=int, default=0, help='Int [0,4], which fold to use as test set. A bit hacky & hardcoded')
-parser.add_argument('--raw-counts', action='store_true', help='Add raw counts to the tokenized dataset')    
+parser.add_argument('--raw-counts', action='store_true', help='Add raw counts to the tokenized dataset')  
+parser.add_argument('--balance-datasets', action='store_true', help='Augment datasets in each fold through supersampling to be the same size')  
+
 args = parser.parse_args()
 print("args:", args)
 t0 = time.time()
@@ -69,6 +72,13 @@ all_filenames = ['filt_neurons_D076_1L_CCFv2_newtypes.h5ad',
 train_filenames = [filename for i, filename in enumerate(all_filenames) if i != args.cv_fold]
 test_filenames = [filename for i, filename in enumerate(all_filenames) if i == args.cv_fold]
 
+suffix=f'_fold{args.cv_fold}'
+if len(test_filenames) == 0: # If we are using all the data for training. Specified by cv_fold >= 4
+    test_filenames = ['filt_neurons_D078_2L_CCFv2_newtypes.h5ad',
+                      'filt_neurons_D079_4L_CCFv2_newtypes.h5ad',
+                      'filt_neurons_D077_2L_CCFv2_newtypes.h5ad']
+    suffix='_test_enucleated'
+
 datasets = []
 for filename in train_filenames:
     h5ad_data_path = os.path.join(parent_directory, args.h5ad_data_directory, filename)
@@ -79,8 +89,12 @@ for filename in train_filenames:
         gene_panel = gene_panel,
         nproc=args.nproc,
         retain_counts=args.raw_counts)
+    len_adata = len(ad.read_h5ad(h5ad_data_path))
+    print("Number of cells in adata:", len_adata)
 
     tokenized_dataset,_ = tk.tokenize_data(h5ad_data_path, args.output_directory, filename, save=False)
+
+    print("Number of cells in tokenized_dataset:", len(tokenized_dataset))
 
     # Filter dataset to only include cells for which the CCF_streamlines is not nans
     tokenized_dataset = tokenized_dataset.filter(lambda x: not np.isnan(np.sum(x['CCF_streamlines'])))
@@ -90,9 +104,20 @@ for filename in train_filenames:
     animal_name = filename.split('_')[2]
     tokenized_dataset = tokenized_dataset.map(lambda x: {'animal_name': animal_name})
 
+    print("Number of cells in tokenized_dataset after filtering:", len(tokenized_dataset))
+
     datasets.append(tokenized_dataset)
 
-dataset = interleave_datasets(datasets)
+if args.balance_datasets:
+    dataset_lengths = [len(dataset) for dataset in datasets]
+    total_cells = sum(dataset_lengths)
+    probabilities = [length/total_cells for length in dataset_lengths]
+else:
+    probabilities = None
+
+dataset = interleave_datasets(datasets, stopping_strategy="all_exhausted", probabilities=probabilities)
+print("Number of cells in combined dataset:", len(dataset))
+print("Value counts of animals:", np.unique_counts(np.array(dataset['animal_name'])))
 
 # get test dataset
 datasets = []
@@ -115,15 +140,18 @@ for filename in test_filenames:
     
     datasets.append(tokenized_dataset)
 
-if len(datasets) > 0:
-    test_dataset = interleave_datasets(datasets)
-
-    # Merge train and test datasets
-    final_dataset = DatasetDict({
-        'train': dataset,
-        'test': test_dataset
-    })
-
-    final_dataset.save_to_disk(os.path.join(args.output_directory, f"{args.output_prefix}_fold{args.cv_fold}.dataset"))
+if args.balance_datasets:
+    dataset_lengths = [len(dataset) for dataset in datasets]
+    total_cells = sum(dataset_lengths)
+    probabilities = [length/total_cells for length in dataset_lengths]
 else:
-    dataset.save_to_disk(os.path.join(args.output_directory, f"{args.output_prefix}_all_train.dataset"))
+    probabilities = None
+test_dataset = interleave_datasets(datasets, stopping_strategy="all_exhausted", probabilities=probabilities)
+
+# Merge train and test datasets
+final_dataset = DatasetDict({
+    'train': dataset,
+    'test': test_dataset
+})
+
+final_dataset.save_to_disk(os.path.join(args.output_directory, f"{args.output_prefix}{suffix}.dataset"))
