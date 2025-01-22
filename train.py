@@ -19,7 +19,32 @@ from model import HierarchicalBert, HierarchicalBertConfig
 from samplers import MultiformerTrainer
 from transformers import BertModel, BertConfig, BertForSequenceClassification, Trainer
 
+import sys
 
+def strip_deepspeed_args():
+    """Remove DeepSpeed arguments from sys.argv before Hydra sees them"""
+    new_argv = []
+    skip_next = False
+    
+    for i, arg in enumerate(sys.argv):
+        if skip_next:
+            skip_next = False
+            continue
+            
+        # Skip DeepSpeed-specific arguments
+        if arg.startswith('--local_rank='):
+            continue
+        if arg == '--local_rank':
+            skip_next = True
+            continue
+        if arg == '--deepspeed':
+            continue
+        if arg.endswith('.json'):
+            continue
+            
+        new_argv.append(arg)
+    
+    sys.argv = new_argv
 def setup_wandb(cfg: DictConfig):
     """Initialize W&B logging"""
     wandb.init(
@@ -81,6 +106,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
             use_relative_positions=config.model.relative_positions.enabled,
             position_encoding_dim=config.model.relative_positions.encoding_dim,
             position_encoding_type=config.model.relative_positions.encoding_type,
+            rms_layernorm=config.model.get("rms_layernorm", False),
             **(config.model.get("bert_params", {}) if config.model.pretrained_type == "none" else {})
         )
         
@@ -357,6 +383,14 @@ def main(cfg: DictConfig) -> None:
         # Disable wandb in debug mode
         cfg.training.report_to = None
 
+    # raise an error if cfg.single_cell_loss_after_set and training on >1 gpus
+    n_gpus = torch.cuda.device_count()
+    if cfg.model.single_cell_loss_after_set and n_gpus > 1:
+        raise ValueError(
+            "single_cell_loss_after_set is True but training on multiple gpus. "
+            "This option is only supported for single-gpu training."
+        )
+
     # Set random seeds
     set_seed(cfg.seed)
     
@@ -448,7 +482,7 @@ def main(cfg: DictConfig) -> None:
 
                 if cfg.model.single_cell_loss_after_set:
                     predictions = np.argmax(outputs.predictions[0], axis=-1)
-                    single_cell_predictions = np.argmax(outputs.predictions[1], axis=-1)
+                    single_cell_predictions = np.argmax(outputs.predictions[1], axis=-1)                    
                 else:
                     predictions = np.argmax(outputs.predictions, axis=-1)
                     single_cell_predictions = None
@@ -505,4 +539,5 @@ def main(cfg: DictConfig) -> None:
 
 
 if __name__ == "__main__":
+    strip_deepspeed_args()
     main()
