@@ -262,7 +262,7 @@ class HexagonalSpatialGroupSampler(Sampler):
         self.max_radius_expansions = max_radius_expansions
         self.group_within_keys = group_within_keys
         if self.group_within_keys is not None:
-            if not hasattr(self.group_within_keys, '__iter__'):
+            if isinstance(self.group_within_keys, str):
                 self.group_within_keys = [self.group_within_keys]
         
         self.num_samples = len(dataset)
@@ -282,10 +282,10 @@ class HexagonalSpatialGroupSampler(Sampler):
             return group_indices
         
         for key in self.group_within_keys:
-            first_key_value = self.dataset[group_indices[0]][key]
+            first_key_value = self.dataset[int(group_indices[0])][key]
             matching_indices = [
                 idx for idx in group_indices 
-                if (self.dataset[idx][key] == first_key_value)
+                if (self.dataset[int(idx)][key] == first_key_value)
             ]
             group_indices = matching_indices
 
@@ -432,7 +432,9 @@ class HexagonalSpatialGroupSampler(Sampler):
             neighbor_indices = self.precomputed.tree.query_ball_point(
                 center, radius, workers=-1
             )
-            
+            # Subset group by keys if necessary
+            neighbor_indices = self._maybe_subset_group_by_keys(neighbor_indices)
+   
             if len(neighbor_indices) >= self.group_size:
                 neighbor_coords = self.precomputed.coordinates[neighbor_indices]
                 distances = np.sum((neighbor_coords - center) ** 2, axis=1)
@@ -440,13 +442,11 @@ class HexagonalSpatialGroupSampler(Sampler):
                 k = min(self.group_size, len(distances))
                 closest_local_indices = np.argpartition(distances, k-1)[:k]
                 selected_indices = np.array(neighbor_indices)[closest_local_indices]
-
-                selected_indices = self._maybe_subset_group_by_keys(selected_indices)
                 
                 if len(selected_indices) >= self.group_size:
                     return selected_indices[:self.group_size]
             
-            radius *= 1.5
+            radius *= 2
             expansions += 1
         
         # If we get here, we couldn't find enough points within max radius
@@ -680,6 +680,7 @@ class SpatialGroupSampler(Sampler):
         precomputed: Optional[PrecomputedData] = None,
         reflect_points=False,
         group_within_keys=None,
+        max_radius_expansions= 2,
         **kwargs
     ):
         self.dataset = dataset
@@ -690,8 +691,9 @@ class SpatialGroupSampler(Sampler):
         self.epoch = 0
         self.reflect_points = reflect_points
         self.group_within_keys = group_within_keys    
+        self.max_radius_expansions = max_radius_expansions
         if self.group_within_keys is not None:
-            if not hasattr(self.group_within_keys, '__iter__'):
+            if isinstance(self.group_within_keys, str):
                 self.group_within_keys = [self.group_within_keys]
         
         self.num_samples = len(dataset)
@@ -761,10 +763,10 @@ class SpatialGroupSampler(Sampler):
             return group_indices
         
         for key in self.group_within_keys:
-            first_key_value = self.dataset[group_indices[0]][key]
+            first_key_value = self.dataset[int(group_indices[0])][key]
             matching_indices = [
                 idx for idx in group_indices 
-                if (self.dataset[idx][key] == first_key_value)
+                if (self.dataset[int(idx)][key] == first_key_value)
             ]
             group_indices = matching_indices
 
@@ -777,12 +779,16 @@ class SpatialGroupSampler(Sampler):
         
         # Ensure we don't request more points than possible
         effective_group_size = min(self.group_size, len(self.dataset) - 1)
-        
-        while True:
+
+        expansions = 0
+        while expansions < self.max_radius_expansions:
             neighbor_indices = self.precomputed.tree.query_ball_point(
                 center, radius, workers=-1
             )
-            
+
+            # Subset group by keys if necessary
+            neighbor_indices = self._maybe_subset_group_by_keys(neighbor_indices)
+                
             if len(neighbor_indices) >= effective_group_size:
                 neighbor_coords = self.precomputed.coordinates[neighbor_indices]
                 distances = np.sum((neighbor_coords - center) ** 2, axis=1)
@@ -792,14 +798,12 @@ class SpatialGroupSampler(Sampler):
                 closest_local_indices = np.argpartition(distances, k-1)[:k]
                 selected_indices = np.array(neighbor_indices)[closest_local_indices]
 
-                # Subset group by keys if necessary
-                selected_indices = self._maybe_subset_group_by_keys(selected_indices)
-                
                 # If we somehow still don't have enough points, expand radius
                 if len(selected_indices) >= effective_group_size:
                     return selected_indices[:effective_group_size]
             
             radius *= 2
+            expansions += 1
 
     def __iter__(self) -> Iterator[int]:
         """Returns iterator of indices where spatial groups are kept together."""
@@ -807,22 +811,37 @@ class SpatialGroupSampler(Sampler):
         g.manual_seed(self.seed + self.epoch)
         
         all_indices = []
+        skipped_centers = []
+        n_groups_made = 0
         num_complete_groups = self.num_samples // self.group_size
 
         if self.group_size == 1:
             return iter(range(self.num_samples))
         
-        for _ in range(num_complete_groups):
+        while n_groups_made < num_complete_groups:
+            if len(skipped_centers) > (5 * num_complete_groups):
+                raise RuntimeError(
+                    f"Unable to find enough points for complete groups. "
+                    f"Only found {n_groups_made} groups. Increase max_radius_expansions, reduce group_size, or increase dataset size."
+                )
             center_idx = self.rng.randint(0, len(self.dataset))
             group = self._get_spatial_group(center_idx)
+            if group is None:
+                skipped_centers.append(center_idx)
+                continue
             all_indices.extend(group)
+            n_groups_made += 1
+            
+        if skipped_centers:
+            print(f"Skipped {len(skipped_centers)} centers due to insufficient points with max radius")
         
         # Handle remaining indices if any
         remaining = self.num_samples - len(all_indices)
         if remaining > 0:
             center_idx = self.rng.randint(0, len(self.dataset))
             last_group = self._get_spatial_group(center_idx)
-            all_indices.extend(last_group[:remaining])
+            if last_group is not None:
+                all_indices.extend(last_group[:remaining])
             
         return iter(all_indices)
 
@@ -861,6 +880,7 @@ class DistributedSpatialGroupSampler(Sampler):
         precomputed: Optional[PrecomputedData] = None,
         reflect_points=False,
         group_within_keys=None,
+        max_radius_expansions= 2,
         **kwargs
         ):
         if num_replicas is None:
@@ -881,10 +901,11 @@ class DistributedSpatialGroupSampler(Sampler):
         self.group_size = group_size
         self.coordinate_key = coordinate_key
         self.reflect_points = reflect_points
+        self.max_radius_expansions = max_radius_expansions
 
         self.group_within_keys = group_within_keys
         if self.group_within_keys is not None:
-            if not hasattr(self.group_within_keys, '__iter__'):
+            if isinstance(self.group_within_keys, str):
                 self.group_within_keys = [self.group_within_keys]
 
         if self.drop_last and len(self.dataset) % self.num_replicas != 0:
@@ -915,18 +936,26 @@ class DistributedSpatialGroupSampler(Sampler):
         g.manual_seed(self.seed + self.epoch)
         
         all_indices = []
+        skipped_centers = []
         num_complete_groups = self.total_size // self.group_size
         
         for _ in range(num_complete_groups):
             center_idx = self.rng.randint(0, len(self.dataset))
             group = self._get_spatial_group(center_idx)
+            if group is None:
+                skipped_centers.append(center_idx)
+                continue
             all_indices.extend(group)
+
+        if skipped_centers:
+            print(f"Skipped {len(skipped_centers)} centers due to insufficient points in test set")
             
         remaining = self.total_size - len(all_indices)
         if remaining > 0 and not self.drop_last:
             center_idx = self.rng.randint(0, len(self.dataset))
             last_group = self._get_spatial_group(center_idx)
-            all_indices.extend(last_group[:remaining])
+            if last_group is not None:
+               all_indices.extend(last_group[:remaining])
         
         assert len(all_indices) == self.total_size, \
             f"Expected {self.total_size} indices but got {len(all_indices)}"
