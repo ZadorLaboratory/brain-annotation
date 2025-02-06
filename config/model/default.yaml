@@ -10,6 +10,7 @@ num_set_layers: 4
 set_hidden_size: 768
 num_attention_heads: 8
 dropout_prob: 0.1
+rms_layernorm: false
 
 # Model behavior flags
 detach_bert_embeddings: false  # Whether to detach BERT embeddings
