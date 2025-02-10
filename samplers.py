@@ -938,7 +938,14 @@ class DistributedSpatialGroupSampler(Sampler):
         all_indices = []
         skipped_centers = []
         num_complete_groups = self.total_size // self.group_size
-        
+
+        if self.group_size == 1:
+            indices = list(range(len(self.dataset)))
+            if len(indices) < self.total_size:
+                indices = indices * (self.total_size // len(indices) + 1)
+            indices = indices[:self.total_size]            
+            return iter(indices[self.rank:self.total_size:self.num_replicas])
+            
         for _ in range(num_complete_groups):
             center_idx = self.rng.randint(0, len(self.dataset))
             group = self._get_spatial_group(center_idx)

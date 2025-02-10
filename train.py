@@ -20,6 +20,7 @@ from samplers import MultiformerTrainer
 from transformers import BertModel, BertConfig, BertForSequenceClassification, Trainer
 
 import sys
+import json
 
 def strip_deepspeed_args():
     """Remove DeepSpeed arguments from sys.argv before Hydra sees them"""
@@ -334,6 +335,8 @@ def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, label_names
     # Get the unique cell types from the specified column
     cell_type_counts = np.unique(dataset[type_col], return_counts=True)
 
+    accuracies = dict()
+
     for cell_type, count in zip(*cell_type_counts):
 
         # Check if the number of rows is greater than min_N
@@ -346,20 +349,17 @@ def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, label_names
             outputs, indices = outputs # indices in the original dataset (not filtered dataset)
             # locations = average_batch_location(dataset, indices)
 
-            labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
-            predictions = np.argmax(outputs.predictions, axis=-1)
-
-            # Add label names to output if available
-            result = {
-                "labels": labels,
-                "predictions": predictions,
-                "indices": indices,
-                "label_names": label_names if label_names else None,
-                "predicted_names": [label_names[str(p)] for p in predictions] if label_names else None,
-                "true_names": [label_names[str(l)] for l in labels] if label_names else None
-            }
+            # Run compute_metrics on the outputs
+            metrics = compute_metrics(outputs, label_names)
             
-            np.save(os.path.join(output_dir, f"cell_type_{cell_type.replace('/', '').replace(' ', '')}_test_brain_predictions.npy"), result)
+            # print accuracy
+            print(f"Accuracy for cell type {cell_type}: {metrics['accuracy']:.4f}")
+            accuracies[cell_type] = metrics['accuracy']
+
+    # save accuracies to a json file, being sure to handle json serialization
+    accuracies_serializable = {k: float(v) for k, v in accuracies.items()}
+    with open(os.path.join(output_dir, "cell_type_accuracies.json"), "w") as f:
+        json.dump(accuracies_serializable, f)
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig) -> None:

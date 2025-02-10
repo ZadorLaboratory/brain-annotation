@@ -3,10 +3,12 @@ group_size: 32
 validation_split: 0.1
 coordinate_key: "CCF_streamlines"
 sampling:
-  strategy: "hex"
+  strategy: "random"
   hex_scaling: 1.2
   reflect_points: true
   use_train_hex_grid_on_eval: true
+  max_radius_expansions: 5
+  group_within_keys: null
 
 label_key: "area_label"
 label_names:  # Mapping from label indices to names
