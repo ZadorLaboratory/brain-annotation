@@ -27,7 +27,7 @@ parser.add_argument('--nproc', type=int, default=24, help='number of processes')
 parser.add_argument('--output_prefix', type=str, default="train_test_barseq", help='output prefix for the tokenized files')
 parser.add_argument('--cv-fold', type=int, default=0, help='Int [0,4], which fold to use as test set. A bit hacky & hardcoded')
 parser.add_argument('--raw-counts', action='store_true', help='Add raw counts to the tokenized dataset')  
-parser.add_argument('--balance-datasets', action='store_true', help='Augment datasets in each fold through supersampling to be the same size')  
+parser.add_argument('--unbalanced-datasets', action='store_true', help='Use datasets as is. If false, we augment datasets in each fold through supersampling to be the same size.')  
 
 args = parser.parse_args()
 print("args:", args)
@@ -108,7 +108,7 @@ for filename in train_filenames:
 
     datasets.append(tokenized_dataset)
 
-if args.balance_datasets:
+if args.unbalanced_datasets:
     dataset_lengths = [len(dataset) for dataset in datasets]
     total_cells = sum(dataset_lengths)
     probabilities = [length/total_cells for length in dataset_lengths]
@@ -140,7 +140,7 @@ for filename in test_filenames:
     
     datasets.append(tokenized_dataset)
 
-if args.balance_datasets:
+if args.unbalanced_datasets:
     dataset_lengths = [len(dataset) for dataset in datasets]
     total_cells = sum(dataset_lengths)
     probabilities = [length/total_cells for length in dataset_lengths]

@@ -141,6 +141,11 @@ def get_dataloaders(datasets: DatasetDict, cfg: DictConfig) -> Dict[str, DataLoa
         coordinate_key='CCF_streamlines',
         additional_feature_keys=['raw_counts'],
         sampling_strategy=cfg.data.sampling.strategy,
+        hex_scaling=cfg.data.sampling.hex_scaling,
+        reflect_points=cfg.data.sampling.reflect_points,
+        use_train_hex_grid_on_eval=cfg.data.sampling.use_train_hex_grid_on_eval,
+        max_radius_expansions=cfg.data.sampling.max_radius_expansions,
+        group_within_keys=cfg.data.sampling.group_within_keys
     )
     
     # Get dataloaders

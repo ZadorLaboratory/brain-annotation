@@ -89,55 +89,19 @@ dataloader_num_workers: 48
 
 ## Usage
 
-### Running the Project
+### Training a model
 
-To run the project with the default configuration, use the following command:
 
-```sh
-python main.py
-```
 
-### Customizing Configurations
+### Predicting with a trained model
 
-You can override the default configurations by specifying them in the command line:
-
-```sh
-python main.py +training.num_train_epochs=10 +training.learning_rate=5e-5
-```
-
-### Logging and Monitoring
-
-The project uses Weights & Biases (wandb) for logging and monitoring. Ensure you have set up your wandb account and configured it properly.
-
-## Contributing
-
-If you would like to contribute to this project, please follow these steps:
-
-1. Fork the repository.
-2. Create a new branch (`git checkout -b feature-branch`).
-3. Make your changes.
-4. Commit your changes (`git commit -m 'Add some feature'`).
-5. Push to the branch (`git push origin feature-branch`).
-6. Open a pull request.
+(use train.py but with `cfg.training.num_train_epochs = 0`. To specify the model use `config.model.pretrained_type = "full"` and `config.model.bert_path_or_name`.)
 
 ## License
 
 This project is licensed under the MIT License. See the LICENSE file for details.
 
-## Contact
 
-For any questions or issues, please open an issue on the GitHub repository or contact the maintainers.
-
-## To do
-
-- [ ] Re-create dataset (without attention masks) for correct test set
-- [ ] What does the prediction map look like for the whole brain in the test set?
-- [ ] What does accuracy look like with group size?
-- [ ] Can we sweep over key model parameters?
-- [ ] What do brain maps look like with class_weights balanced accuracy?
-- [ ] What areas are confused with which other areas for the class_weights balanced model?
-- [ ] Are certain brain areas more difficult to predict than others?
-- [ ] Are certain cell types more informative than others?
 
 ### Findings
 
