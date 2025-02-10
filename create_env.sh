@@ -21,3 +21,4 @@ python -m pip install jax[cuda12] jax absl-py optax
 python -m pip install jiwer pymatreader
 python -m pip install hydra-core --upgrade
 python -m pip install ccf_streamlines
+python -m pip install colour-science
