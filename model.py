@@ -36,6 +36,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         use_relative_positions: bool = False,
         position_encoding_dim: int = 32,  # Must ensure (set_hidden_size + position_encoding_dim) is divisible by num_attention_heads
         position_encoding_type: str = "mlp",
+        rms_layernorm: bool = False,
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -57,6 +58,7 @@ class HierarchicalBertConfig(PretrainedConfig):
         self.use_relative_positions = use_relative_positions
         self.position_encoding_dim = position_encoding_dim
         self.position_encoding_type = position_encoding_type
+        self.rms_layernorm = rms_layernorm
 
 class SetTransformerLayer(nn.Module):
     """Simple Set Transformer layer."""
@@ -69,8 +71,12 @@ class SetTransformerLayer(nn.Module):
             dropout=config.dropout_prob,
             batch_first=True
         )
-        self.layer_norm1 = nn.LayerNorm(config.set_hidden_size) # todo: test RMSnorm
-        self.layer_norm2 = nn.LayerNorm(config.set_hidden_size)
+        if config.rms_layernorm:
+            self.layer_norm1 = nn.RMSNorm(config.set_hidden_size) 
+            self.layer_norm2 = nn.RMSNorm(config.set_hidden_size)
+        else:
+            self.layer_norm1 = nn.LayerNorm(config.set_hidden_size)
+            self.layer_norm2 = nn.LayerNorm(config.set_hidden_size)
         self.feedforward = nn.Sequential(
             nn.Linear(config.set_hidden_size, config.set_hidden_size * 4),
             nn.GELU(),

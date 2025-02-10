@@ -226,7 +226,7 @@ def compute_metrics(eval_pred, label_names: Optional[Dict[int, str]] = None) -> 
     if isinstance(logits, tuple):
         group_logits, cell_logits = logits
         group_predictions = np.argmax(group_logits, axis=-1)
-        cell_predictions = np.argmax(cell_logits, axis=-1)
+        # cell_predictions = np.argmax(cell_logits, axis=-1)
 
         # Get detailed classification report for group predictions
         report = classification_report(
@@ -240,14 +240,14 @@ def compute_metrics(eval_pred, label_names: Optional[Dict[int, str]] = None) -> 
 
         metrics = {
             "accuracy": (group_predictions == labels).mean(),
-            "cell_accuracy": (cell_predictions == cell_labels).mean(),
+            # "cell_accuracy": (cell_predictions == cell_labels).mean(),
             "classification_report": report
         }
 
         # Extract only scalar metrics for logging
         scalar_metrics = {
             "accuracy": metrics["accuracy"],
-            "cell_accuracy": metrics["cell_accuracy"]
+            # "cell_accuracy": metrics["cell_accuracy"]
         }
         
         # Add per-class metrics in a wandb-friendly format

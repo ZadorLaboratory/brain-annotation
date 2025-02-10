@@ -203,8 +203,8 @@ def main(cfg: DictConfig) -> None:
     
     log_weight_statistics(weights, cfg.data.get("label_names"))
     
-    output_path = os.path.join(cfg.output_dir, "class_weights.npy")
-    os.makedirs(cfg.output_dir, exist_ok=True)
+    output_path = os.path.join(cfg.data.dataset_path, "class_weights.npy")
+    # os.makedirs(cfg.output_dir, exist_ok=True)
     np.save(output_path, weights)
     print(f"\nSaved class weights to {output_path}")
     
