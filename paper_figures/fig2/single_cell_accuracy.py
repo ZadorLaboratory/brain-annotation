@@ -10,7 +10,7 @@ models = ['Cell Type Model', 'k-Neighbors', 'Cell Type k-Neighbors', 'Random For
     'Logistic Regression', 'Murine Geneformer']
 
 sns.set_style("ticks")
-plt.figure(figsize=(5, 5))
+plt.figure(figsize=(5, 7))
 ordering = np.argsort([np.mean(m) for m in results.values()])
 plt.bar(models,
         np.array([np.mean(m) for m in results.values()])[ordering]*100,
@@ -20,5 +20,6 @@ plt.bar(models,
 plt.ylabel("Accuracy (%)", fontsize=14)
 plt.xticks(rotation=75, fontsize=12,  ha='right')
 plt.yticks(fontsize=12)
+plt.title("Single Cell Area Classification", fontsize=14)
 plt.tight_layout()
-plt.savefig("single_cell_area_classification_comparison.png", dpi=300)  # Save the plot as an image
+plt.savefig("single_cell_area_classification_comparison.pdf", dpi=300)  # Save the plot as pdf
