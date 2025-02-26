@@ -827,7 +827,7 @@ class SpatialGroupSampler(Sampler):
         
         # Fast path for single-item groups
         if self.group_size == 1:
-            return iter(range(self.num_samples))
+            yield from range(self.num_samples)
         
         if self.iterate_all_points:
             # Lazy approach: yield each group's points as they're computed
@@ -1292,7 +1292,7 @@ class GroupedSpatialTrainer(Trainer):
     def predict(
         self, test_dataset: Dataset, ignore_keys: Optional[List[str]] = None, metric_key_prefix: str = "test", seed=42
     ) -> PredictionOutput:
-        """Modified predict method that ensures indices match prediction order."""
+        """Memory-efficient predict method that tracks indices without collecting all batches."""
         self._memory_tracker.start()
         
         # Get original dataloader
@@ -1302,17 +1302,14 @@ class GroupedSpatialTrainer(Trainer):
         print(f"Test dataloader sampler: {test_dataloader.sampler}")
         print(f"Test dataloader sampler dataset length: {len(test_dataloader)}")
         
-        # Collect batches and indices in order
-        collected_batches, ordered_indices = collect_batches_and_indices(test_dataloader)
+        # Create an index-tracking dataloader wrapper
+        index_tracking_dataloader = IndexTrackingDataLoader(test_dataloader)
         
-        # Create new dataloader with collected batches
-        ordered_dataloader = OrderedBatchDataLoader(collected_batches, test_dataloader)
-        
-        # Run evaluation with ordered batches
+        # Run evaluation with index tracking
         start_time = time.time()
         eval_loop = self.prediction_loop if self.args.use_legacy_prediction_loop else self.evaluation_loop
         output = eval_loop(
-            ordered_dataloader, 
+            index_tracking_dataloader, 
             description="Prediction", 
             ignore_keys=ignore_keys, 
             metric_key_prefix=metric_key_prefix
@@ -1336,10 +1333,10 @@ class GroupedSpatialTrainer(Trainer):
         self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
         self._memory_tracker.stop_and_update_metrics(output.metrics)
         
-        # Subsample based on batch size (!) if not hex strategy
-        # We return just 1 prediction for each cell
-        # Even though internally these were batched into N groups of size N
-        # where N is group size
+        # Get the collected indices in order
+        ordered_indices = index_tracking_dataloader.get_collected_indices()
+        
+        # Subsample based on batch size if not hex strategy
         if self.sampling_strategy != 'hex':
             preds = output.predictions[::self.spatial_group_size]
             label_ids = output.label_ids[::self.spatial_group_size]
@@ -1353,55 +1350,56 @@ class GroupedSpatialTrainer(Trainer):
             predictions=preds, 
             label_ids=label_ids, 
             metrics=output.metrics
-        ), ordered_indices  
-    
-def collect_batches_and_indices(dataloader: DataLoader) -> Tuple[List, np.ndarray]:
-    """
-    Collects batches and indices in iteration order.
-    
-    Args:
-        dataloader: Original dataloader
-        
-    Returns:
-        Tuple of (collected_batches, collected_indices)
-    """
-    collected_batches = []
-    collected_indices = []
-    print(next(iter(dataloader)))
-    for batch in dataloader:
-        # Extract and store indices
-        if isinstance(batch, dict):
-            indices = batch.pop('indices')  # Remove indices from batch
-            if torch.is_tensor(indices):
-                indices = indices.cpu()
-            collected_indices.append(indices)
-            collected_batches.append(batch)
-        else:
-            raise ValueError(f"DataLoader must yield dict-style batches, got {type(batch)}")
-    
-    # Combine all indices
-    if torch.is_tensor(collected_indices[0]):
-        indices = torch.cat(collected_indices)
-    elif isinstance(collected_indices[0], np.ndarray):
-        indices = np.concatenate(collected_indices)
-    else:
-        indices = [item for batch in collected_indices for item in batch]
-    
-    return collected_batches, indices
+        ), ordered_indices
 
-class OrderedBatchDataLoader:
-    """A DataLoader that yields pre-collected batches in order."""
-    def __init__(self, batches, original_dataloader):
-        self.batches = batches
-        self.original_dataloader = original_dataloader
+
+class IndexTrackingDataLoader:
+    """A DataLoader wrapper that tracks indices without storing all batches."""
+    def __init__(self, dataloader):
+        self.dataloader = dataloader
+        self.collected_indices = []
     
     def __iter__(self):
-        return iter(self.batches)
+        # Reset the collected indices at the start of iteration
+        self.collected_indices = []
+        
+        # Create an iterator from the original dataloader
+        self.dataloader_iter = iter(self.dataloader)
+        return self
+    
+    def __next__(self):
+        try:
+            batch = next(self.dataloader_iter)
+            
+            # Extract and store indices, but keep them in the batch
+            if isinstance(batch, dict):
+                indices = batch.get('indices')
+                if indices is not None:
+                    if torch.is_tensor(indices):
+                        self.collected_indices.append(indices.cpu().clone())  # clone to avoid reference issues
+                    else:
+                        self.collected_indices.append(indices)
+                return batch
+            else:
+                raise ValueError(f"DataLoader must yield dict-style batches, got {type(batch)}")
+        except StopIteration:
+            raise
     
     def __len__(self):
-        return len(self.batches)
+        return len(self.dataloader)
     
     @property
     def dataset(self):
-        return self.original_dataloader.dataset
-
+        return self.dataloader.dataset
+    
+    def get_collected_indices(self):
+        """Return the concatenated indices collected during iteration."""
+        if not self.collected_indices:
+            return []
+            
+        if torch.is_tensor(self.collected_indices[0]):
+            return torch.cat(self.collected_indices)
+        elif isinstance(self.collected_indices[0], np.ndarray):
+            return np.concatenate(self.collected_indices)
+        else:
+            return [item for batch in self.collected_indices for item in batch]
