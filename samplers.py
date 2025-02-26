@@ -1297,6 +1297,10 @@ class GroupedSpatialTrainer(Trainer):
         
         # Get original dataloader
         test_dataloader = self.get_test_dataloader(test_dataset, seed)
+        # print dataloader stats
+        print(f"Test dataloader: {test_dataloader}")
+        print(f"Test dataloader sampler: {test_dataloader.sampler}")
+        print(f"Test dataloader sampler dataset length: {len(test_dataloader)}")
         
         # Collect batches and indices in order
         collected_batches, ordered_indices = collect_batches_and_indices(test_dataloader)
@@ -1337,13 +1341,17 @@ class GroupedSpatialTrainer(Trainer):
         # Even though internally these were batched into N groups of size N
         # where N is group size
         if self.sampling_strategy != 'hex':
-            output.predictions = output.predictions[::self.spatial_group_size]
-            output.label_ids = output.label_ids[::self.spatial_group_size]
+            preds = output.predictions[::self.spatial_group_size]
+            label_ids = output.label_ids[::self.spatial_group_size]
             ordered_indices = ordered_indices[::self.spatial_group_size]
+        else:
+            preds = output.predictions
+            label_ids = output.label_ids
+            ordered_indices = ordered_indices
 
         return PredictionOutput(
-            predictions=output.predictions, 
-            label_ids=output.label_ids, 
+            predictions=preds, 
+            label_ids=label_ids, 
             metrics=output.metrics
         ), ordered_indices  
     
@@ -1359,7 +1367,7 @@ def collect_batches_and_indices(dataloader: DataLoader) -> Tuple[List, np.ndarra
     """
     collected_batches = []
     collected_indices = []
-    
+    print(next(iter(dataloader)))
     for batch in dataloader:
         # Extract and store indices
         if isinstance(batch, dict):
@@ -1369,7 +1377,7 @@ def collect_batches_and_indices(dataloader: DataLoader) -> Tuple[List, np.ndarra
             collected_indices.append(indices)
             collected_batches.append(batch)
         else:
-            raise ValueError("DataLoader must yield dict-style batches")
+            raise ValueError(f"DataLoader must yield dict-style batches, got {type(batch)}")
     
     # Combine all indices
     if torch.is_tensor(collected_indices[0]):
