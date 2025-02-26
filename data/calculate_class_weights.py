@@ -22,7 +22,7 @@ def setup_wandb(cfg: DictConfig) -> None:
         )
 
 
-def infer_num_classes(dataset, label_key: str) -> int:
+def infer_num_classes(labels) -> int:
     """
     Infer the total number of classes from the dataset.
     Checks all splits to ensure we capture all possible classes.
@@ -34,12 +34,8 @@ def infer_num_classes(dataset, label_key: str) -> int:
     Returns:
         int: Total number of unique classes across all splits
     """
-    all_labels = []
-    for split in dataset.keys():
-        if label_key in dataset[split].features:
-            all_labels.extend(dataset[split][label_key])
     
-    unique_labels = np.unique(all_labels)
+    unique_labels = np.unique(labels)
     num_classes = len(unique_labels)
     
     print(f"\nLabel Analysis:")
@@ -185,12 +181,12 @@ def main(cfg: DictConfig) -> None:
     
     if cfg.data.label_key not in dataset[cfg.data.split].features:
         raise ValueError(f"Label key {cfg.data.label_key} not found in dataset")
-    
-    # Infer number of classes from all splits
-    num_classes = infer_num_classes(dataset, cfg.data.label_key)
-    
-    # Calculate weights using training split
-    train_labels = np.array(dataset[cfg.data.split][cfg.data.label_key])
+        
+    # Calculate weights using all splits
+    train_labels = np.concatenate([np.array(dataset["train"][cfg.data.label_key]), np.array(dataset["test"][cfg.data.label_key])])
+
+    num_classes = infer_num_classes(train_labels)
+
     weights = calculate_class_weights(
         train_labels,
         method=cfg.weighting.method,
