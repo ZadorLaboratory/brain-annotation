@@ -16,7 +16,7 @@ from transformers import (
 from sklearn.model_selection import train_test_split
 
 from model import HierarchicalBert, HierarchicalBertConfig
-from samplers import MultiformerTrainer
+from samplers import GroupedSpatialTrainer
 from transformers import BertModel, BertConfig, BertForSequenceClassification, Trainer
 
 import sys
@@ -95,7 +95,7 @@ def create_model(config: DictConfig, class_weights: Optional[torch.Tensor] = Non
         model_config = HierarchicalBertConfig(
             num_labels=config.model.num_labels,
             # For "none", pass None to use default config
-            bert_config=None if config.model.pretrained_type == "none" else config.model.bert_path_or_name,
+            bert_config=config.model.bert_path_or_name,
             num_set_layers=config.model.num_set_layers,
             set_hidden_size=config.model.set_hidden_size,
             num_attention_heads=config.model.num_attention_heads,
@@ -319,7 +319,7 @@ def average_batch_location(data, batch_indices, all_indices):
             
     return np.stack(batch_locations) if batch_locations else np.array([])
 
-def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, label_names=None, location_key="CCF_streamlines"):
+def test_by_cell_type(dataset, trainer, type_col, min_N, output_dir, label_names=None):
     """
     Test the model by cell type.
 
@@ -423,7 +423,7 @@ def main(cfg: DictConfig) -> None:
     if "single-cell" in cfg.model.pretrained_type:
         trainer = Trainer(**trainer_params)
     else:
-        trainer = MultiformerTrainer(
+        trainer = GroupedSpatialTrainer(
             **trainer_params,
             spatial_group_size=cfg.data.group_size,
             spatial_label_key="labels",
@@ -456,63 +456,37 @@ def main(cfg: DictConfig) -> None:
     # Test and validation
     if cfg.run_test_set:
         for data_key in ["test", "validation"]:
-            # Initialize tensors to store results across epochs
-            all_locations = []
-            all_predictions = []
-            all_labels = []
-            all_indices = []
-            all_single_cell_predictions = []
-            all_single_cell_labels = []
 
-            for epoch in range(cfg.num_predict_epochs):
-                trainer.accelerator.gradient_state._reset_state() # Fixes an odd bug where the trainer thinks the dataloader is finished so truncates further batches incorrectly
+            trainer.accelerator.gradient_state._reset_state() # Fixes an odd bug where the trainer thinks the dataloader is finished so truncates further batches incorrectly
 
-                random_seed = cfg.seed + torch.initial_seed()
+            random_seed = cfg.seed + torch.initial_seed()
 
-                outputs = trainer.predict(
-                    datasets[data_key],
-                    metric_key_prefix=data_key,
-                    seed=random_seed
-                )
+            outputs = trainer.predict(
+                datasets[data_key],
+                metric_key_prefix=data_key,
+                seed=random_seed
+            )
 
-                if "single-cell" in cfg.model.pretrained_type:
-                    locations = datasets[data_key]["CCF_streamlines"]
-                    indices = np.arange(len(datasets[data_key]))
-                else:
-                    outputs, indices = outputs
-                    locations = average_batch_location(np.array(datasets[data_key]["CCF_streamlines"]), indices, datasets[data_key]["uuid"])
+            if "single-cell" in cfg.model.pretrained_type:
+                locations = datasets[data_key]["CCF_streamlines"]
+                indices = np.arange(len(datasets[data_key]))
+            else:
+                outputs, indices = outputs
+                # locations = average_batch_location(np.array(datasets[data_key]["CCF_streamlines"]), indices, datasets[data_key]["uuid"])
 
-                if cfg.model.single_cell_loss_after_set:
-                    predictions = np.argmax(outputs.predictions[0], axis=-1)
-                    single_cell_predictions = np.argmax(outputs.predictions[1], axis=-1)                    
-                else:
-                    predictions = np.argmax(outputs.predictions, axis=-1)
-                    single_cell_predictions = None
+            if cfg.model.single_cell_loss_after_set:
+                predictions = np.argmax(outputs.predictions[0], axis=-1)
+                single_cell_predictions = np.argmax(outputs.predictions[1], axis=-1)                    
+            else:
+                predictions = np.argmax(outputs.predictions, axis=-1)
+                single_cell_predictions = None
 
-                labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
-                single_cell_labels = outputs.label_ids[1] if isinstance(outputs.label_ids, tuple) else None
-
-                # Append results from this epoch
-                all_locations.append(locations)
-                all_predictions.append(predictions)
-                all_labels.append(labels)
-                all_indices.append(indices)
-                if single_cell_predictions is not None:
-                    all_single_cell_predictions.append(single_cell_predictions)
-                if single_cell_labels is not None:
-                    all_single_cell_labels.append(single_cell_labels)
-
-            # Concatenate results from all epochs
-            locations = np.concatenate(all_locations, axis=0)
-            predictions = np.concatenate(all_predictions, axis=0)
-            labels = np.concatenate(all_labels, axis=0)
-            indices = np.concatenate(all_indices, axis=0)
-            single_cell_predictions = np.concatenate(all_single_cell_predictions, axis=0) if all_single_cell_predictions else None
-            single_cell_labels = np.concatenate(all_single_cell_labels, axis=0) if all_single_cell_labels else None
+            labels = outputs.label_ids[0] if isinstance(outputs.label_ids, tuple) else outputs.label_ids
+            single_cell_labels = outputs.label_ids[1] if isinstance(outputs.label_ids, tuple) else None
                 
             # Include label names in output
             output_dict = {
-                "locations": locations,
+                # "locations": locations,
                 "labels": labels,
                 "predictions": predictions,
                 "indices": indices,
@@ -523,7 +497,7 @@ def main(cfg: DictConfig) -> None:
             # Log metrics
             trainer.log_metrics(data_key, outputs.metrics)
             # save to disk. 
-            np.save(os.path.join(cfg.output_dir, f"{data_key}_brain_predictions.npy"), output_dict)
+            np.save(os.path.join(cfg.output_dir, f"{data_key}_brain_predictions_cells.npy"), output_dict)
 
     if cfg.test_by_cell_type:
         # Test by cell type

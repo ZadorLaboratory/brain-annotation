@@ -247,7 +247,8 @@ class HexagonalSpatialGroupSampler(Sampler):
         reflect_points: bool = True,
         hex_grid: Optional[HexGridData] = None, 
         max_radius_expansions: int = 2,
-        group_within_keys: Optional[List[str]] = None
+        group_within_keys: Optional[List[str]] = None,
+        iterate_all_points: bool = False
     ):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -563,7 +564,8 @@ class DistributedHexagonalSpatialGroupSampler(HexagonalSpatialGroupSampler):
         reflect_points: bool = True,
         hex_grid: Optional[HexGridData] = None,
         max_radius_expansions: int = 2,
-        group_within_keys: Optional[List[str]] = None
+        group_within_keys: Optional[List[str]] = None,
+        iterate_all_points: bool = False,
     ):
         # Initialize distributed parameters
         if num_replicas is None:
@@ -678,9 +680,10 @@ class SpatialGroupSampler(Sampler):
         coordinate_key: str = "CCF_streamlines",
         seed: int = 0,
         precomputed: Optional[PrecomputedData] = None,
-        reflect_points=False,
-        group_within_keys=None,
-        max_radius_expansions= 2,
+        reflect_points: bool = False,
+        group_within_keys = None,
+        max_radius_expansions: int = 5,
+        iterate_all_points: bool = False,
         **kwargs
     ):
         self.dataset = dataset
@@ -692,6 +695,7 @@ class SpatialGroupSampler(Sampler):
         self.reflect_points = reflect_points
         self.group_within_keys = group_within_keys    
         self.max_radius_expansions = max_radius_expansions
+        self.iterate_all_points = iterate_all_points
         if self.group_within_keys is not None:
             if isinstance(self.group_within_keys, str):
                 self.group_within_keys = [self.group_within_keys]
@@ -806,44 +810,66 @@ class SpatialGroupSampler(Sampler):
             expansions += 1
 
     def __iter__(self) -> Iterator[int]:
-        """Returns iterator of indices where spatial groups are kept together."""
+        """
+        Returns a lazy iterator that generates spatial groups on-demand.
+        
+        This implementation avoids precomputing all groups upfront, which improves
+        startup time significantly when iterate_all_points=True.
+        
+        Returns:
+            Iterator[int]: An iterator over dataset indices where points within
+                        spatial proximity are grouped together.
+        """
+        # Set random seed for reproducibility
         g = torch.Generator()
         g.manual_seed(self.seed + self.epoch)
+        self.rng = check_random_state(self.seed + self.epoch)
         
-        all_indices = []
-        skipped_centers = []
-        n_groups_made = 0
-        num_complete_groups = self.num_samples // self.group_size
-
+        # Fast path for single-item groups
         if self.group_size == 1:
             return iter(range(self.num_samples))
         
-        while n_groups_made < num_complete_groups:
-            if len(skipped_centers) > (5 * num_complete_groups):
-                raise RuntimeError(
-                    f"Unable to find enough points for complete groups. "
-                    f"Only found {n_groups_made} groups. Increase max_radius_expansions, reduce group_size, or increase dataset size."
-                )
-            center_idx = self.rng.randint(0, len(self.dataset))
-            group = self._get_spatial_group(center_idx)
-            if group is None:
-                skipped_centers.append(center_idx)
-                continue
-            all_indices.extend(group)
-            n_groups_made += 1
+        if self.iterate_all_points:
+            # Lazy approach: yield each group's points as they're computed
+            for center_idx in range(self.num_samples):
+                # Optional logging at reasonable intervals
+                if center_idx % 1000 == 0:
+                    print(f"Processing center point {center_idx}/{self.num_samples}")
+                    
+                group = self._get_spatial_group(center_idx)
+                if group is not None:
+                    for idx in group:
+                        yield idx
+        else:
+            # For random sampling mode:
+            # We'll generate groups on-demand and yield their indices
+            all_indices = []
+            skipped_centers = []
+            n_groups_made = 0
+            num_complete_groups = self.num_samples // self.group_size
             
-        if skipped_centers:
-            print(f"Skipped {len(skipped_centers)} centers due to insufficient points with max radius")
-        
-        # Handle remaining indices if any
-        remaining = self.num_samples - len(all_indices)
-        if remaining > 0:
-            center_idx = self.rng.randint(0, len(self.dataset))
-            last_group = self._get_spatial_group(center_idx)
-            if last_group is not None:
-                all_indices.extend(last_group[:remaining])
-            
-        return iter(all_indices)
+            while n_groups_made < num_complete_groups:
+                if len(skipped_centers) > (5 * num_complete_groups):
+                    raise RuntimeError(
+                        f"Unable to find enough points for complete groups. "
+                        f"Only found {n_groups_made} groups. Increase max_radius_expansions, "
+                        f"reduce group_size, or increase dataset size."
+                    )
+                    
+                center_idx = self.rng.randint(0, len(self.dataset))
+                group = self._get_spatial_group(center_idx)
+                
+                if group is None:
+                    skipped_centers.append(center_idx)
+                    continue
+                    
+                for idx in group:
+                    yield idx
+                    
+                n_groups_made += 1
+                
+            if skipped_centers:
+                print(f"Skipped {len(skipped_centers)} centers due to insufficient points with max radius")
 
     def __len__(self) -> int:
         return self.num_samples
@@ -881,6 +907,7 @@ class DistributedSpatialGroupSampler(Sampler):
         reflect_points=False,
         group_within_keys=None,
         max_radius_expansions= 2,
+        iterate_all_points: bool = False,
         **kwargs
         ):
         if num_replicas is None:
@@ -902,7 +929,7 @@ class DistributedSpatialGroupSampler(Sampler):
         self.coordinate_key = coordinate_key
         self.reflect_points = reflect_points
         self.max_radius_expansions = max_radius_expansions
-
+        self.iterate_all_points = iterate_all_points
         self.group_within_keys = group_within_keys
         if self.group_within_keys is not None:
             if isinstance(self.group_within_keys, str):
@@ -937,7 +964,7 @@ class DistributedSpatialGroupSampler(Sampler):
         
         all_indices = []
         skipped_centers = []
-        num_complete_groups = self.total_size // self.group_size
+        num_complete_groups = self.total_size // (self.group_size * self.num_replicas)
 
         if self.group_size == 1:
             indices = list(range(len(self.dataset)))
@@ -946,6 +973,19 @@ class DistributedSpatialGroupSampler(Sampler):
             indices = indices[:self.total_size]            
             return iter(indices[self.rank:self.total_size:self.num_replicas])
             
+        if self.iterate_all_points:
+            indices = list(range(len(self.dataset)))
+            if len(indices) < self.total_size:
+                indices = indices * (self.total_size // len(indices) + 1)
+            indices = indices[:self.total_size]            
+            for center_idx in indices[self.rank:self.total_size:self.num_replicas]:
+                group = self._get_spatial_group(center_idx)
+                if group is None:
+                    skipped_centers.append(center_idx)
+                    continue
+                all_indices.extend(group) 
+            return iter(all_indices)
+
         for _ in range(num_complete_groups):
             center_idx = self.rng.randint(0, len(self.dataset))
             group = self._get_spatial_group(center_idx)
@@ -957,20 +997,14 @@ class DistributedSpatialGroupSampler(Sampler):
         if skipped_centers:
             print(f"Skipped {len(skipped_centers)} centers due to insufficient points in test set")
             
-        remaining = self.total_size - len(all_indices)
+        remaining = (self.total_size // self.num_replicas) - len(all_indices)
         if remaining > 0 and not self.drop_last:
             center_idx = self.rng.randint(0, len(self.dataset))
             last_group = self._get_spatial_group(center_idx)
             if last_group is not None:
                all_indices.extend(last_group[:remaining])
         
-        assert len(all_indices) == self.total_size, \
-            f"Expected {self.total_size} indices but got {len(all_indices)}"
-            
-        indices = all_indices[self.rank:self.total_size:self.num_replicas]
-        assert len(indices) == self.num_samples
-        
-        return iter(indices)
+        return iter(all_indices)
 
     def __len__(self) -> int:
         return self.num_samples
@@ -1107,7 +1141,7 @@ class SpatialGroupCollator:
         
         return batch
 
-class MultiformerTrainer(Trainer):
+class GroupedSpatialTrainer(Trainer):
     def __init__(self, *args, add_single_cell_labels=True, 
                  spatial_group_size=32, 
                  spatial_label_key='area_labels', 
@@ -1147,6 +1181,7 @@ class MultiformerTrainer(Trainer):
 
         super().__init__(*args, **kwargs)
 
+        self.sampling_strategy = sampling_strategy
         if sampling_strategy == 'hex':
             if self.args.world_size <= 1:
                 self.sampler_class = HexagonalSpatialGroupSampler
@@ -1196,7 +1231,7 @@ class MultiformerTrainer(Trainer):
             )
         
 
-    def _get_eval_sampler(self, eval_dataset, precomputed=True, add_jitter=True, eval_seed=42) -> Optional[torch.utils.data.sampler.Sampler]:
+    def _get_eval_sampler(self, eval_dataset, precomputed=True, add_jitter=True, eval_seed=42, iterate_all_points=False) -> Optional[torch.utils.data.sampler.Sampler]:
         if not isinstance(eval_dataset, collections.abc.Sized):
             return None
 
@@ -1213,15 +1248,18 @@ class MultiformerTrainer(Trainer):
                 hex_grid=self.hex_grid if (hasattr(self, 'hex_grid') and self.use_train_hex_grid_on_eval) else None,
                 max_radius_expansions=self.max_radius_expansions,
                 group_within_keys=self.group_within_keys,
+                iterate_all_points=iterate_all_points
             )
         
     def get_test_dataloader(self, test_dataset: Dataset, seed=42) -> DataLoader:
         """
         Returns the test [`~torch.utils.data.DataLoader`].
 
-        Same behavior as normal but custom in that we pass precomputed=False to _get_eval_sampler.
-
-        In addition, if we are using a hex grid, we do not add jitter.
+        Same behavior as normal but custom in that 
+         - we pass precomputed=False to _get_eval_sampler.
+         - if we are using a hex grid, we do not add jitter.
+         - we pass iterate_all_points=True. The behavior of this is to iterate
+            through all the points in the dataset as the center_idx. 
 
         Args:
             test_dataset (`torch.utils.data.Dataset`, *optional*):
@@ -1244,7 +1282,7 @@ class MultiformerTrainer(Trainer):
         }
 
         if not isinstance(test_dataset, torch.utils.data.IterableDataset):
-            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False, add_jitter=True, eval_seed=seed)
+            dataloader_params["sampler"] = self._get_eval_sampler(test_dataset, precomputed=False, add_jitter=True, eval_seed=seed, iterate_all_points=True)
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
@@ -1294,12 +1332,21 @@ class MultiformerTrainer(Trainer):
         self.control = self.callback_handler.on_predict(self.args, self.state, self.control, output.metrics)
         self._memory_tracker.stop_and_update_metrics(output.metrics)
         
+        # Subsample based on batch size (!) if not hex strategy
+        # We return just 1 prediction for each cell
+        # Even though internally these were batched into N groups of size N
+        # where N is group size
+        if self.sampling_strategy != 'hex':
+            output.predictions = output.predictions[::self.spatial_group_size]
+            output.label_ids = output.label_ids[::self.spatial_group_size]
+            ordered_indices = ordered_indices[::self.spatial_group_size]
+
         return PredictionOutput(
             predictions=output.predictions, 
             label_ids=output.label_ids, 
             metrics=output.metrics
-        ), ordered_indices  # Now indices are guaranteed to match prediction order
-        
+        ), ordered_indices  
+    
 def collect_batches_and_indices(dataloader: DataLoader) -> Tuple[List, np.ndarray]:
     """
     Collects batches and indices in iteration order.
