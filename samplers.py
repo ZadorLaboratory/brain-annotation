@@ -1338,8 +1338,15 @@ class GroupedSpatialTrainer(Trainer):
         
         # Subsample based on batch size if not hex strategy
         if self.sampling_strategy != 'hex':
-            preds = output.predictions[::self.spatial_group_size]
-            label_ids = output.label_ids[::self.spatial_group_size]
+            if isinstance(output.predictions, tuple):
+                preds = tuple([p[::self.spatial_group_size] for p in output.predictions])
+            else:
+                preds = output.predictions[::self.spatial_group_size]
+
+            if isinstance(output.label_ids, tuple):
+                label_ids = tuple([p[::self.spatial_group_size] for p in output.label_ids])
+            else:
+                label_ids = output.label_ids[::self.spatial_group_size]
             ordered_indices = ordered_indices[::self.spatial_group_size]
         else:
             preds = output.predictions
