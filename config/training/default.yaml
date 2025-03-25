@@ -20,3 +20,4 @@ report_to: "wandb"
 remove_unused_columns: false
 dataloader_prefetch_factor: 4
 dataloader_num_workers: 24
+eval_accumulation_steps: 100
